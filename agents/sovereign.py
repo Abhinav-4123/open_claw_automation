@@ -198,7 +198,9 @@ Be specific and actionable. Focus on strategies that can be largely automated wi
 
         except Exception as e:
             # Fallback strategies
-            return self._get_fallback_strategies()
+            fallback = self._get_fallback_strategies()
+            self.strategy_pool = fallback
+            return fallback
 
     def _get_fallback_strategies(self) -> List[BusinessStrategy]:
         """Fallback legitimate business strategies"""

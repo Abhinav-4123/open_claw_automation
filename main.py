@@ -28,8 +28,12 @@ from agents.overseer import overseer
 from agents.sovereign import sovereign
 from agents.oracle import oracle
 from agents.bookie import bookie
+from agent_personalities import AGENT_PERSONALITIES, get_agent_display, get_agent_card_html
 
 engine_running = True
+
+# User action items tracking
+user_action_items = []
 cycle_count = 0
 startup_time = None
 activity_log = []  # Track recent agent activities
@@ -331,7 +335,7 @@ def render_overseer_status():
             <span style="background:{'#00ff88' if status.get('running') else '#ff4444'};color:#000;padding:2px 6px;border-radius:8px;font-size:9px;font-weight:600;">{'ACTIVE' if status.get('running') else 'STOPPED'}</span>
         </div>
         <div style="font-size:11px;color:#888;">
-            <div>Health: <span style="color:{health_color};font-weight:600;">{health:.0f if health else 'N/A'}%</span></div>
+            <div>Health: <span style="color:{health_color};font-weight:600;">{f"{health:.0f}" if health else "N/A"}%</span></div>
             <div>Checks: {status.get('total_checks', 0)} | Blockers: {status.get('active_blockers', 0)}</div>
             <div>Last: {last_check} | Next: 2h</div>
         </div>
@@ -916,6 +920,319 @@ async def optimize_portfolio():
         return {"success": True, "actions": results["actions"]}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ============== CENTRALIZED COMMAND CENTER ==============
+
+def add_user_action(action: str, priority: str = "medium", category: str = "general"):
+    """Add an action item for the user"""
+    global user_action_items
+    user_action_items.append({
+        "id": f"action_{datetime.now().strftime('%H%M%S')}",
+        "action": action,
+        "priority": priority,
+        "category": category,
+        "created_at": datetime.now().isoformat(),
+        "completed": False
+    })
+    user_action_items = user_action_items[-20:]  # Keep last 20
+
+
+@app.get("/command", response_class=HTMLResponse)
+async def command_center():
+    """Centralized Command Center - The main dashboard"""
+    global activity_log, user_action_items
+
+    # Gather all data
+    sov_status = sovereign.get_status()
+    bookie_status = bookie.get_portfolio_summary()
+    oracle_status = oracle.get_status()
+    overseer_status = overseer.get_status()
+    queen_status = queen.get_status()
+    dashboard_data = control_center.get_dashboard_data()
+    all_agents = chef.get_all_agents()
+
+    # Calculate progress
+    total_revenue = sov_status["total_revenue"]
+    target = sov_status["target"]
+    progress_pct = (total_revenue / target) * 100 if target > 0 else 0
+
+    # Build agent cards
+    agents_html = ""
+    core_agents = [
+        ("sovereign", "active", "Orchestrating business strategy", 0),
+        ("oracle", "active", "Analyzing market trends", oracle_status.get("trend_analyses", 0)),
+        ("bookie", "active", f"Managing {bookie_status['active_bets']} bets", bookie_status.get("active_bets", 0)),
+        ("queen", "active", f"Tracking {queen_status['daily_goals']} daily goals", queen_status.get("goals_completed", 0)),
+        ("overseer", "active", f"System health: {overseer_status.get('latest_health_score', 'N/A')}%", overseer_status.get("total_checks", 0)),
+        ("chef", "active", f"Managing {len(all_agents)} worker agents", len(all_agents)),
+    ]
+
+    for agent_type, status, task, done in core_agents:
+        agents_html += get_agent_card_html(agent_type, status, task, done)
+
+    # Worker agents
+    worker_html = ""
+    for agent in all_agents[:6]:
+        agent_type = agent.get("type", "unknown")
+        current = agent.get("current_task", "Idle")
+        done = agent.get("tasks_completed", 0)
+        worker_html += get_agent_card_html(agent_type, "active" if current else "idle", current, done)
+
+    # Tasks
+    pending_tasks = dashboard_data.get("pending_tasks", [])[:5]
+    active_tasks = dashboard_data.get("active_tasks", [])[:5]
+    completed_tasks = dashboard_data.get("recent_completed", [])[:5]
+
+    def render_task_list(tasks, status_type):
+        if not tasks:
+            return '<div style="color:#666;padding:10px;text-align:center;">No tasks</div>'
+        html = ""
+        colors = {"pending": "#888", "active": "#ffcc00", "completed": "#00ff88"}
+        for t in tasks:
+            html += f'''<div style="background:#1a1a2e;padding:10px;border-radius:6px;margin-bottom:6px;border-left:3px solid {colors.get(status_type, '#888')};">
+                <div style="font-size:12px;font-weight:500;">{t.get("title", "Task")[:40]}</div>
+                <div style="font-size:10px;color:#666;margin-top:3px;">{t.get("category", "general")} | {t.get("priority", "medium")}</div>
+            </div>'''
+        return html
+
+    pending_html = render_task_list(pending_tasks, "pending")
+    active_html = render_task_list(active_tasks, "active")
+    completed_html = render_task_list(completed_tasks, "completed")
+
+    # User action items
+    pending_actions = [a for a in user_action_items if not a.get("completed")]
+    action_html = ""
+    if pending_actions:
+        for a in pending_actions[:5]:
+            pri_color = {"high": "#ff4444", "medium": "#ffcc00", "low": "#00ccff"}.get(a["priority"], "#888")
+            action_html += f'''<div style="background:#2a1a1a;padding:12px;border-radius:8px;margin-bottom:8px;border-left:3px solid {pri_color};">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:13px;">{a["action"]}</span>
+                    <span style="font-size:10px;color:{pri_color};">{a["priority"].upper()}</span>
+                </div>
+                <div style="font-size:10px;color:#666;margin-top:4px;">{a["category"]}</div>
+            </div>'''
+    else:
+        action_html = '<div style="color:#00ff88;padding:20px;text-align:center;">All caught up! No pending actions.</div>'
+
+    # Ventures summary
+    ventures = sovereign.get_ventures()[:4]
+    ventures_html = ""
+    for v in ventures:
+        s_color = {"profitable": "#00ff88", "scaling": "#00ccff", "building": "#ffcc00"}.get(v["status"], "#888")
+        ventures_html += f'''<div style="background:#1a2a1a;padding:10px;border-radius:6px;margin-bottom:6px;border-left:3px solid {s_color};">
+            <div style="font-size:12px;font-weight:500;">{v["name"][:30]}</div>
+            <div style="font-size:10px;color:#888;">${v["revenue"]:,.0f} rev | {v["status"]}</div>
+        </div>'''
+
+    if not ventures_html:
+        ventures_html = '<div style="color:#666;padding:10px;text-align:center;">No ventures yet</div>'
+
+    # Activity log
+    recent_activity = activity_log[:8]
+    activity_html = ""
+    for log in recent_activity:
+        agent = log.get("agent", "system")
+        p = get_agent_display(agent)
+        activity_html += f'''<div style="padding:6px 0;border-bottom:1px solid #222;font-size:11px;">
+            <span style="color:#555;">{log.get("time", "")}</span>
+            <span style="color:{p["color"]};margin-left:8px;">{p["emoji"]} {p["name"]}</span>
+            <span style="color:#888;margin-left:8px;">{log.get("action", "")}</span>
+        </div>'''
+
+    # Chat messages
+    chat_html = ""
+    for m in sovereign.messages[-6:]:
+        sender = m.get("sender", "system")
+        color = "#ff6600" if sender == "sovereign" else "#00ccff" if sender == "user" else "#888"
+        name = "Marcus" if sender == "sovereign" else "You" if sender == "user" else sender
+        chat_html += f'''<div style="margin-bottom:8px;padding:8px;background:#1a1a2e;border-radius:6px;">
+            <strong style="color:{color};">{name}:</strong>
+            <span style="color:#ccc;font-size:12px;"> {m.get("content", "")[:100]}</span>
+        </div>'''
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Command Center - OpenClaw</title>
+    <meta http-equiv="refresh" content="30">
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }}
+        .header {{ background: linear-gradient(135deg, #0a0a0f, #1a1a2e); padding: 15px 25px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }}
+        .header h1 {{ font-size: 22px; }}
+        .header h1 span {{ background: linear-gradient(90deg, #ff6600, #ffcc00); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+        .nav {{ display: flex; gap: 15px; }}
+        .nav a {{ color: #888; text-decoration: none; font-size: 13px; padding: 6px 12px; border-radius: 6px; transition: all 0.3s; }}
+        .nav a:hover {{ background: #1a1a2e; color: #fff; }}
+        .nav a.active {{ background: #ff6600; color: #000; }}
+        .main {{ display: grid; grid-template-columns: 280px 1fr 320px; min-height: calc(100vh - 60px); }}
+        .panel {{ padding: 15px; overflow-y: auto; }}
+        .left {{ background: #0d0d12; border-right: 1px solid #222; }}
+        .right {{ background: #0d0d12; border-left: 1px solid #222; }}
+        h2 {{ font-size: 13px; color: #888; text-transform: uppercase; margin-bottom: 12px; letter-spacing: 1px; }}
+        h3 {{ font-size: 12px; color: #666; margin: 15px 0 10px 0; }}
+        .metric-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }}
+        .metric {{ background: #1a1a2e; padding: 12px; border-radius: 8px; text-align: center; }}
+        .metric h4 {{ font-size: 10px; color: #666; text-transform: uppercase; }}
+        .metric .val {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
+        .progress-bar {{ background: #222; border-radius: 8px; height: 8px; margin: 8px 0; overflow: hidden; }}
+        .progress-fill {{ background: linear-gradient(90deg, #ff6600, #ffcc00); height: 100%; }}
+        .big-stat {{ text-align: center; padding: 20px; background: linear-gradient(135deg, #1a1a2e, #0a0a0f); border-radius: 12px; margin-bottom: 15px; border: 1px solid #333; }}
+        .big-stat .val {{ font-size: 36px; font-weight: 700; background: linear-gradient(90deg, #00ff88, #00ccff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+        .section {{ background: #111; border: 1px solid #222; border-radius: 10px; padding: 15px; margin-bottom: 15px; }}
+        .btn {{ display: inline-block; padding: 8px 16px; background: linear-gradient(90deg, #ff6600, #ffcc00); color: #000; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 12px; border: none; cursor: pointer; margin: 3px; }}
+        .btn:hover {{ opacity: 0.9; }}
+        .btn-secondary {{ background: #333; color: #fff; }}
+        .chat-box {{ background: #0a0a0f; border: 1px solid #333; border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto; margin-bottom: 10px; }}
+        .chat-input {{ display: flex; gap: 8px; }}
+        .chat-input input {{ flex: 1; padding: 8px 12px; background: #1a1a2e; border: 1px solid #333; border-radius: 6px; color: #fff; font-size: 12px; }}
+        .user-actions {{ background: linear-gradient(135deg, #2a1a1a, #1a1a2e); border: 1px solid #ff4444; border-radius: 10px; padding: 15px; margin-bottom: 15px; }}
+        .tabs {{ display: flex; gap: 5px; margin-bottom: 10px; }}
+        .tab {{ padding: 6px 12px; background: #1a1a2e; border-radius: 6px; font-size: 11px; cursor: pointer; }}
+        .tab.active {{ background: #ff6600; color: #000; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🚀 <span>COMMAND CENTER</span></h1>
+        <div class="nav">
+            <a href="/command" class="active">Command</a>
+            <a href="/profit">Profit</a>
+            <a href="/">Tasks</a>
+            <a href="/docs">API</a>
+        </div>
+        <div style="font-size:12px;color:#888;">
+            Cycle #{cycle_count} | Health: {overseer_status.get('latest_health_score', 'N/A')}%
+        </div>
+    </div>
+
+    <div class="main">
+        <!-- LEFT: AGENT TEAM -->
+        <div class="panel left">
+            <h2>🤖 Agent Team</h2>
+            {agents_html}
+
+            <h3>Worker Agents</h3>
+            {worker_html if worker_html else '<div style="color:#666;font-size:11px;">No workers spawned yet</div>'}
+        </div>
+
+        <!-- CENTER: MAIN CONTENT -->
+        <div class="panel">
+            <!-- Progress to $1M -->
+            <div class="big-stat">
+                <div style="font-size:12px;color:#888;">PROGRESS TO $1M</div>
+                <div class="val">${total_revenue:,.0f}</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width:{min(progress_pct, 100):.1f}%;"></div>
+                </div>
+                <div style="font-size:12px;color:#888;">{progress_pct:.2f}% Complete</div>
+            </div>
+
+            <div class="metric-row">
+                <div class="metric">
+                    <h4>MRR</h4>
+                    <div class="val" style="color:#00ff88;">${sov_status['mrr']:,.0f}</div>
+                </div>
+                <div class="metric">
+                    <h4>Ventures</h4>
+                    <div class="val" style="color:#00ccff;">{sov_status['ventures_count']}</div>
+                </div>
+                <div class="metric">
+                    <h4>Active Bets</h4>
+                    <div class="val" style="color:#ffcc00;">{bookie_status['active_bets']}</div>
+                </div>
+                <div class="metric">
+                    <h4>Win Rate</h4>
+                    <div class="val">{bookie_status['win_rate']*100:.0f}%</div>
+                </div>
+            </div>
+
+            <!-- YOUR ACTION ITEMS -->
+            <div class="user-actions">
+                <h2 style="color:#ff4444;">⚡ YOUR ACTION ITEMS</h2>
+                {action_html}
+            </div>
+
+            <!-- Task Boards -->
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+                <div class="section">
+                    <h2>📋 Pending</h2>
+                    {pending_html}
+                </div>
+                <div class="section">
+                    <h2>🔄 In Progress</h2>
+                    {active_html}
+                </div>
+                <div class="section">
+                    <h2>✅ Completed</h2>
+                    {completed_html}
+                </div>
+            </div>
+
+            <!-- Quick Actions -->
+            <div class="section">
+                <h2>⚡ Quick Actions</h2>
+                <form action="/api/sovereign/generate-strategies" method="POST" style="display:inline;">
+                    <button type="submit" class="btn">Generate Strategies</button>
+                </form>
+                <form action="/api/sovereign/launch-venture" method="POST" style="display:inline;">
+                    <button type="submit" class="btn">Launch Venture</button>
+                </form>
+                <form action="/api/oracle/analyze-trends" method="POST" style="display:inline;">
+                    <button type="submit" class="btn btn-secondary">Analyze Trends</button>
+                </form>
+                <form action="/api/bookie/place-bet" method="POST" style="display:inline;">
+                    <input type="hidden" name="stake" value="500">
+                    <button type="submit" class="btn btn-secondary">Place $500 Bet</button>
+                </form>
+                <form action="/api/overseer/run-check" method="POST" style="display:inline;">
+                    <button type="submit" class="btn btn-secondary">Run Health Check</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- RIGHT: VENTURES & CHAT -->
+        <div class="panel right">
+            <!-- Chat with Marcus -->
+            <div class="section">
+                <h2>💬 Chat with Marcus (The Mastermind)</h2>
+                <div class="chat-box">
+                    {chat_html if chat_html else '<div style="color:#666;text-align:center;padding:20px;">Start a conversation...</div>'}
+                </div>
+                <form action="/api/sovereign/chat" method="POST" class="chat-input">
+                    <input type="text" name="message" placeholder="Ask Marcus anything..." required>
+                    <button type="submit" class="btn">Send</button>
+                </form>
+            </div>
+
+            <!-- Active Ventures -->
+            <div class="section">
+                <h2>🚀 Active Ventures</h2>
+                {ventures_html}
+            </div>
+
+            <!-- Oracle Insights -->
+            <div class="section">
+                <h2>🔮 Luna's Insights</h2>
+                <div style="font-size:11px;color:#888;">
+                    <div>Opportunities Found: <span style="color:#9933ff;">{oracle_status.get('opportunities_count', 0)}</span></div>
+                    <div>Hot Markets: <span style="color:#9933ff;">{', '.join(oracle_status.get('top_markets', ['Analyzing...']))[:50]}</span></div>
+                </div>
+            </div>
+
+            <!-- Activity Feed -->
+            <div class="section">
+                <h2>📊 Activity Feed</h2>
+                <div style="max-height:150px;overflow-y:auto;">
+                    {activity_html if activity_html else '<div style="color:#666;font-size:11px;">No activity yet</div>'}
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
 
 
 # ============== PROFIT DASHBOARD ==============
