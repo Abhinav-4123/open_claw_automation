@@ -23,9 +23,12 @@ class ImproverAgent(BaseAgent):
     """
 
     def __init__(self, focus_area: str = "general", **kwargs):
+        # Set attributes BEFORE calling super().__init__ since get_system_prompt() is called there
         self.focus_area = focus_area
-        super().__init__(role=f"Improver-{focus_area}", **kwargs)
         self.product_name = os.getenv("PRODUCT_NAME", "TestGuard AI")
+        # Remove role from kwargs if present (spawner may pass it)
+        kwargs.pop('role', None)
+        super().__init__(role=f"Improver-{focus_area}", **kwargs)
 
     def get_system_prompt(self) -> str:
         return f"""You are a Product Improvement Specialist for {self.product_name}.

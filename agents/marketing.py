@@ -23,10 +23,13 @@ class MarketingAgent(BaseAgent):
     """
 
     def __init__(self, platform: str = "twitter", **kwargs):
+        # Set attributes BEFORE calling super().__init__ since get_system_prompt() is called there
         self.platform = platform
-        super().__init__(role=f"Marketing-{platform}", **kwargs)
         self.product_name = os.getenv("PRODUCT_NAME", "TestGuard AI")
         self.product_pitch = os.getenv("PRODUCT_PITCH", "AI-powered QA testing")
+        # Remove role from kwargs if present (spawner may pass it)
+        kwargs.pop('role', None)
+        super().__init__(role=f"Marketing-{platform}", **kwargs)
 
     def get_system_prompt(self) -> str:
         return f"""You are an expert growth marketer for {self.product_name}.

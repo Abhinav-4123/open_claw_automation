@@ -23,6 +23,8 @@ class FeedbackAgent(BaseAgent):
 
     def __init__(self, source: str = "twitter_replies", **kwargs):
         self.source = source
+        # Remove role from kwargs if present (spawner may pass it)
+        kwargs.pop('role', None)
         super().__init__(role=f"Feedback-{source}", **kwargs)
 
     def get_system_prompt(self) -> str:
