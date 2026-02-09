@@ -6,13 +6,16 @@ import os
 import json
 import asyncio
 import random
-from datetime import datetime
+import hashlib
+import secrets
+from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, Response, Depends, Cookie
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
 
 import google.generativeai as genai
 from dotenv import load_dotenv
@@ -29,6 +32,64 @@ from agents.sovereign import sovereign
 from agents.oracle import oracle
 from agents.bookie import bookie
 from agent_personalities import AGENT_PERSONALITIES, get_agent_display, get_agent_card_html
+
+# ============================================
+# AUTHENTICATION CONFIGURATION
+# ============================================
+SECRET_KEY = os.getenv("SECRET_KEY", secrets.token_hex(32))
+SESSION_EXPIRE_HOURS = 24
+
+# Master account
+MASTER_ACCOUNTS = {
+    "abhinav100.sharma@gmail.com": {
+        "password_hash": hashlib.sha256("openclaw2024!".encode()).hexdigest(),
+        "role": "admin",
+        "name": "Abhinav"
+    }
+}
+
+# Active sessions (in production, use Redis or database)
+active_sessions: Dict[str, dict] = {}
+
+def verify_password(email: str, password: str) -> bool:
+    """Verify user credentials"""
+    if email not in MASTER_ACCOUNTS:
+        return False
+    stored_hash = MASTER_ACCOUNTS[email]["password_hash"]
+    input_hash = hashlib.sha256(password.encode()).hexdigest()
+    return stored_hash == input_hash
+
+def create_session(email: str) -> str:
+    """Create a new session token"""
+    token = secrets.token_urlsafe(32)
+    active_sessions[token] = {
+        "email": email,
+        "created": datetime.now(),
+        "expires": datetime.now() + timedelta(hours=SESSION_EXPIRE_HOURS),
+        "role": MASTER_ACCOUNTS[email]["role"],
+        "name": MASTER_ACCOUNTS[email]["name"]
+    }
+    return token
+
+def get_session(token: str) -> Optional[dict]:
+    """Get session data if valid"""
+    if not token or token not in active_sessions:
+        return None
+    session = active_sessions[token]
+    if datetime.now() > session["expires"]:
+        del active_sessions[token]
+        return None
+    return session
+
+async def require_auth(request: Request) -> dict:
+    """Dependency to require authentication"""
+    token = request.cookies.get("session_token")
+    session = get_session(token)
+    if not session:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return session
+
+# ============================================
 
 engine_running = True
 
@@ -271,6 +332,153 @@ async def run_engine():
 
 app = FastAPI(title="OpenClaw", version="2.0.0", lifespan=lifespan)
 
+# Add session middleware
+app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+
+
+# ============================================
+# LOGIN PAGE
+# ============================================
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(error: str = None):
+    """Login page"""
+    error_msg = f'<div style="color:#ff4444;margin-bottom:15px;">{error}</div>' if error else ""
+    return f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Login - OpenClaw</title>
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: system-ui, sans-serif;
+                background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }}
+            .login-box {{
+                background: #111;
+                border: 1px solid #333;
+                border-radius: 16px;
+                padding: 40px;
+                width: 400px;
+                box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+            }}
+            .logo {{
+                text-align: center;
+                margin-bottom: 30px;
+            }}
+            .logo h1 {{
+                font-size: 32px;
+                background: linear-gradient(90deg, #ff6600, #ffcc00);
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+            }}
+            .logo p {{
+                color: #666;
+                font-size: 14px;
+                margin-top: 5px;
+            }}
+            .form-group {{
+                margin-bottom: 20px;
+            }}
+            label {{
+                display: block;
+                color: #888;
+                font-size: 12px;
+                margin-bottom: 8px;
+                text-transform: uppercase;
+            }}
+            input {{
+                width: 100%;
+                padding: 14px;
+                background: #0a0a0f;
+                border: 1px solid #333;
+                border-radius: 8px;
+                color: #fff;
+                font-size: 16px;
+            }}
+            input:focus {{
+                outline: none;
+                border-color: #ff6600;
+            }}
+            button {{
+                width: 100%;
+                padding: 14px;
+                background: linear-gradient(90deg, #ff6600, #ffcc00);
+                border: none;
+                border-radius: 8px;
+                color: #000;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                margin-top: 10px;
+            }}
+            button:hover {{
+                opacity: 0.9;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="login-box">
+            <div class="logo">
+                <h1>OpenClaw</h1>
+                <p>AI Company Command Center</p>
+            </div>
+            {error_msg}
+            <form method="POST" action="/login">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" name="email" required placeholder="your@email.com">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" name="password" required placeholder="••••••••">
+                </div>
+                <button type="submit">Sign In</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    '''
+
+@app.post("/login")
+async def do_login(request: Request, email: str = Form(...), password: str = Form(...)):
+    """Process login"""
+    if verify_password(email, password):
+        token = create_session(email)
+        response = RedirectResponse(url="/command", status_code=303)
+        response.set_cookie(
+            key="session_token",
+            value=token,
+            httponly=True,
+            max_age=SESSION_EXPIRE_HOURS * 3600,
+            samesite="lax"
+        )
+        return response
+    return RedirectResponse(url="/login?error=Invalid+credentials", status_code=303)
+
+@app.get("/logout")
+async def logout(request: Request):
+    """Logout and clear session"""
+    token = request.cookies.get("session_token")
+    if token and token in active_sessions:
+        del active_sessions[token]
+    response = RedirectResponse(url="/login", status_code=303)
+    response.delete_cookie("session_token")
+    return response
+
+
+# ============================================
+# AUTHENTICATION CHECK HELPER
+# ============================================
+def check_auth(request: Request) -> Optional[dict]:
+    """Check if user is authenticated, return session or None"""
+    token = request.cookies.get("session_token")
+    return get_session(token)
+
 
 def render_tasks(tasks, task_class):
     if not tasks:
@@ -419,7 +627,15 @@ def render_queen_status():
 
 
 @app.get("/", response_class=HTMLResponse)
-async def dashboard():
+async def dashboard(request: Request):
+    # Check authentication
+    session = check_auth(request)
+    if not session:
+        return RedirectResponse(url="/login", status_code=303)
+
+    # Get user info
+    user_name = session.get("name", "User")
+
     global cycle_count, startup_time, activity_log
 
     data = control_center.get_dashboard_data()
@@ -477,6 +693,10 @@ async def dashboard():
             <div>Uptime: <span>{uptime}</span></div>
             <div>Cycle: <span>{cycle_count}</span></div>
             <div>Agents: <span>{len(agents)}</span></div>
+            <div style="border-left:1px solid #444;padding-left:20px;display:flex;align-items:center;gap:10px;">
+                <span style="color:#ff6600;">{user_name}</span>
+                <a href="/logout" style="color:#888;font-size:11px;text-decoration:none;">Logout</a>
+            </div>
         </div>
     </div>
 
@@ -939,9 +1159,18 @@ def add_user_action(action: str, priority: str = "medium", category: str = "gene
 
 
 @app.get("/command", response_class=HTMLResponse)
-async def command_center():
+async def command_center(request: Request):
     """Centralized Command Center - The main dashboard"""
+    # Check authentication
+    session = check_auth(request)
+    if not session:
+        return RedirectResponse(url="/login", status_code=303)
+
     global activity_log, user_action_items
+
+    # Get user info
+    user_name = session.get("name", "User")
+    user_email = session.get("email", "")
 
     # Gather all data
     sov_status = sovereign.get_status()
@@ -1103,8 +1332,14 @@ async def command_center():
             <a href="/">Tasks</a>
             <a href="/docs">API</a>
         </div>
-        <div style="font-size:12px;color:#888;">
-            Cycle #{cycle_count} | Health: {overseer_status.get('latest_health_score', 'N/A')}%
+        <div style="display:flex;align-items:center;gap:15px;">
+            <div style="font-size:12px;color:#888;">
+                Cycle #{cycle_count} | Health: {overseer_status.get('latest_health_score', 'N/A')}%
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding-left:15px;border-left:1px solid #333;">
+                <span style="color:#ff6600;font-size:12px;">{user_name}</span>
+                <a href="/logout" style="color:#888;font-size:11px;text-decoration:none;">Logout</a>
+            </div>
         </div>
     </div>
 
@@ -1238,8 +1473,16 @@ async def command_center():
 # ============== PROFIT DASHBOARD ==============
 
 @app.get("/profit", response_class=HTMLResponse)
-async def profit_dashboard():
+async def profit_dashboard(request: Request):
     """Business profit tracking dashboard"""
+    # Check authentication
+    session = check_auth(request)
+    if not session:
+        return RedirectResponse(url="/login", status_code=303)
+
+    # Get user info
+    user_name = session.get("name", "User")
+
     sov_status = sovereign.get_status()
     bookie_status = bookie.get_portfolio_summary()
     oracle_status = oracle.get_status()
@@ -1305,9 +1548,17 @@ async def profit_dashboard():
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1><span>$1M</span> MISSION CONTROL</h1>
-        <p style="color:#888;margin-top:5px;">Autonomous Business Network | {len(sovereign.ventures)} Ventures | {bookie_status["active_bets"]} Active Bets</p>
+    <div class="header" style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+            <h1><span>$1M</span> MISSION CONTROL</h1>
+            <p style="color:#888;margin-top:5px;">Autonomous Business Network | {len(sovereign.ventures)} Ventures | {bookie_status["active_bets"]} Active Bets</p>
+        </div>
+        <div style="display:flex;align-items:center;gap:15px;">
+            <a href="/command" style="color:#888;text-decoration:none;font-size:13px;">Command</a>
+            <a href="/" style="color:#888;text-decoration:none;font-size:13px;">Tasks</a>
+            <span style="color:#ff6600;font-size:13px;">{user_name}</span>
+            <a href="/logout" style="color:#888;font-size:12px;text-decoration:none;">Logout</a>
+        </div>
     </div>
 
     <div class="main">
@@ -1410,6 +1661,42 @@ async def profit_dashboard():
     </div>
 </body>
 </html>"""
+
+
+# ============================================
+# ALTERNATIVE ROUTES (aliases)
+# ============================================
+
+@app.get("/task-center", response_class=HTMLResponse)
+async def task_center_redirect(request: Request):
+    """Redirect to main dashboard (task center)"""
+    session = check_auth(request)
+    if not session:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/", status_code=303)
+
+@app.get("/vibesecurity/profit", response_class=HTMLResponse)
+async def vibesecurity_profit(request: Request):
+    """VibeSecurity profit dashboard alias"""
+    return await profit_dashboard(request)
+
+@app.get("/vibesecurity/command", response_class=HTMLResponse)
+async def vibesecurity_command(request: Request):
+    """VibeSecurity command center alias"""
+    return await command_center(request)
+
+@app.get("/vibesecurity/tasks", response_class=HTMLResponse)
+async def vibesecurity_tasks(request: Request):
+    """VibeSecurity task center alias"""
+    return await dashboard(request)
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_alias(request: Request):
+    """Dashboard alias"""
+    session = check_auth(request)
+    if not session:
+        return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/command", status_code=303)
 
 
 if __name__ == "__main__":
