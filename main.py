@@ -25,6 +25,9 @@ from agents.chef import chef
 from agents.coder import coder
 from agents.queen import queen
 from agents.overseer import overseer
+from agents.sovereign import sovereign
+from agents.oracle import oracle
+from agents.bookie import bookie
 
 engine_running = True
 cycle_count = 0
@@ -753,6 +756,343 @@ async def get_overseer_actions(limit: int = 20):
             for a in actions
         ]
     }
+
+
+# ============== SOVEREIGN/BUSINESS ENDPOINTS ==============
+
+@app.get("/api/sovereign/status")
+async def sovereign_status():
+    """Get Sovereign Agent status"""
+    return sovereign.get_status()
+
+
+@app.get("/api/sovereign/ventures")
+async def get_ventures():
+    """Get all ventures"""
+    return sovereign.get_ventures()
+
+
+@app.post("/api/sovereign/generate-strategies")
+async def generate_strategies(count: int = 20):
+    """Generate new business strategies"""
+    try:
+        strategies = await sovereign.generate_strategies(count)
+        log_activity("sovereign", "Strategies", f"Generated {len(strategies)} strategies")
+        return {"success": True, "count": len(strategies)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sovereign/launch-venture")
+async def launch_venture():
+    """Launch a new venture from strategy pool"""
+    try:
+        if not sovereign.strategy_pool:
+            await sovereign.generate_strategies(10)
+
+        if sovereign.strategy_pool:
+            strategy = sovereign.strategy_pool[0]
+            venture = await sovereign.launch_venture(strategy)
+            sovereign.strategy_pool.remove(strategy)
+            log_activity("sovereign", "Launch", f"Launched: {venture.name}")
+            return {"success": True, "venture": venture.name}
+        return {"success": False, "error": "No strategies available"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/sovereign/chat")
+async def chat_with_sovereign(message: str = Form(...)):
+    """Chat with the Sovereign"""
+    try:
+        response = await sovereign.process_user_message(message)
+        log_activity("sovereign", "Chat", message[:30])
+        return {"response": response}
+    except Exception as e:
+        return {"response": f"Error: {str(e)}"}
+
+
+@app.post("/api/sovereign/discuss")
+async def discuss_strategy(idea: str = Form(...)):
+    """Deep strategic discussion about an idea"""
+    try:
+        analysis = await sovereign.discuss_strategy(idea)
+        log_activity("sovereign", "Strategy Discussion", idea[:30])
+        return analysis
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/api/sovereign/messages")
+async def get_sovereign_messages(limit: int = 20):
+    """Get recent Sovereign messages"""
+    return {"messages": sovereign.messages[-limit:]}
+
+
+# ============== ORACLE ENDPOINTS ==============
+
+@app.get("/api/oracle/status")
+async def oracle_status():
+    """Get Oracle Agent status"""
+    return oracle.get_status()
+
+
+@app.get("/api/oracle/opportunities")
+async def get_opportunities(count: int = 10):
+    """Get top opportunities"""
+    return {"opportunities": oracle.get_top_opportunities(count)}
+
+
+@app.post("/api/oracle/analyze-trends")
+async def analyze_trends():
+    """Analyze market trends"""
+    try:
+        trends = await oracle.analyze_market_trends()
+        log_activity("oracle", "Trends", f"Analyzed {len(trends.hot_markets)} markets")
+        return {
+            "hot_markets": trends.hot_markets,
+            "technologies": trends.emerging_technologies,
+            "opportunities": trends.opportunities
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.post("/api/oracle/generate")
+async def generate_opportunities(count: int = 20):
+    """Generate new opportunities"""
+    try:
+        opportunities = await oracle.generate_opportunities(count)
+        return {"success": True, "count": len(opportunities)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============== BOOKIE ENDPOINTS ==============
+
+@app.get("/api/bookie/status")
+async def bookie_status():
+    """Get Bookie Agent status"""
+    return bookie.get_status()
+
+
+@app.get("/api/bookie/portfolio")
+async def get_portfolio():
+    """Get portfolio summary"""
+    return bookie.get_portfolio_summary()
+
+
+@app.get("/api/bookie/bets")
+async def get_bets():
+    """Get all bets"""
+    return {"bets": bookie.get_all_bets()}
+
+
+@app.post("/api/bookie/place-bet")
+async def place_bet(stake: float = Form(500)):
+    """Place a new bet on a strategy"""
+    try:
+        # Get strategy from Oracle
+        if not oracle.opportunities:
+            await oracle.generate_opportunities(10)
+
+        top_opps = oracle.get_top_opportunities(1)
+        if top_opps:
+            strategy = top_opps[0]
+            bet = await bookie.place_bet(strategy, stake)
+            if bet:
+                log_activity("bookie", "Bet", f"Placed ${stake:,.0f} on {bet.name}")
+                return {"success": True, "bet_id": bet.id, "name": bet.name}
+        return {"success": False, "error": "No opportunities or insufficient capital"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/bookie/optimize")
+async def optimize_portfolio():
+    """Auto-optimize the portfolio"""
+    try:
+        results = await bookie.auto_manage()
+        return {"success": True, "actions": results["actions"]}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ============== PROFIT DASHBOARD ==============
+
+@app.get("/profit", response_class=HTMLResponse)
+async def profit_dashboard():
+    """Business profit tracking dashboard"""
+    sov_status = sovereign.get_status()
+    bookie_status = bookie.get_portfolio_summary()
+    oracle_status = oracle.get_status()
+
+    ventures = sovereign.get_ventures()[:5]
+    bets = bookie.get_all_bets()[:5]
+
+    ventures_html = ""
+    for v in ventures:
+        status_color = {"profitable": "#00ff88", "scaling": "#00ccff", "building": "#ffcc00", "killed": "#ff4444"}.get(v["status"], "#888")
+        ventures_html += f'''<div style="background:#1a1a2e;padding:12px;border-radius:8px;margin-bottom:8px;border-left:3px solid {status_color};">
+            <div style="display:flex;justify-content:space-between;">
+                <strong>{v["name"][:30]}</strong>
+                <span style="color:{status_color};">{v["status"].upper()}</span>
+            </div>
+            <div style="font-size:12px;color:#888;margin-top:4px;">
+                Revenue: ${v["revenue"]:,.0f} | ROI: {v["roi"]:.0f}%
+            </div>
+        </div>'''
+
+    bets_html = ""
+    for b in bets:
+        status_color = {"winning": "#00ff88", "active": "#00ccff", "losing": "#ff4444"}.get(b["status"], "#888")
+        bets_html += f'''<div style="background:#1a1a2e;padding:12px;border-radius:8px;margin-bottom:8px;border-left:3px solid {status_color};">
+            <div style="display:flex;justify-content:space-between;">
+                <strong>{b["name"][:25]}</strong>
+                <span style="color:{status_color};">{b["status"].upper()}</span>
+            </div>
+            <div style="font-size:12px;color:#888;margin-top:4px;">
+                Stake: ${b["stake"]:,.0f} | Value: ${b["current_value"]:,.0f} | ROI: {b["roi"]:.0f}%
+            </div>
+        </div>'''
+
+    progress_pct = sov_status["progress_percent"]
+    progress_color = "#00ff88" if progress_pct >= 50 else "#ffcc00" if progress_pct >= 20 else "#888"
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <title>Profit Dashboard - OpenClaw</title>
+    <meta http-equiv="refresh" content="30">
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{ font-family: system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }}
+        .header {{ background: linear-gradient(135deg, #1a1a2e, #0a0a0f); padding: 20px 30px; border-bottom: 1px solid #333; }}
+        .header h1 {{ font-size: 28px; }}
+        .header h1 span {{ background: linear-gradient(90deg, #00ff88, #00ccff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+        .main {{ display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; padding: 20px; }}
+        .panel {{ background: #111; border: 1px solid #222; border-radius: 12px; padding: 20px; }}
+        .panel h2 {{ font-size: 16px; color: #00ccff; margin-bottom: 15px; }}
+        .big-number {{ font-size: 48px; font-weight: 700; background: linear-gradient(90deg, #00ff88, #00ccff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
+        .stats-grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }}
+        .stat {{ background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center; }}
+        .stat h4 {{ font-size: 11px; color: #666; text-transform: uppercase; }}
+        .stat .val {{ font-size: 24px; font-weight: 600; margin-top: 5px; }}
+        .progress-bar {{ background: #222; border-radius: 10px; height: 20px; margin: 15px 0; overflow: hidden; }}
+        .progress-fill {{ background: linear-gradient(90deg, #00ff88, #00ccff); height: 100%; transition: width 0.5s; }}
+        .btn {{ display: inline-block; padding: 10px 20px; background: linear-gradient(90deg, #00ff88, #00ccff); color: #000; border-radius: 8px; text-decoration: none; font-weight: 600; margin: 5px; cursor: pointer; border: none; }}
+        .btn:hover {{ opacity: 0.9; }}
+        .chat-box {{ background: #0a0a0f; border: 1px solid #333; border-radius: 8px; padding: 10px; height: 200px; overflow-y: auto; margin-bottom: 10px; }}
+        .chat-input {{ display: flex; gap: 10px; }}
+        .chat-input input {{ flex: 1; padding: 10px; background: #1a1a2e; border: 1px solid #333; border-radius: 8px; color: #fff; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1><span>$1M</span> MISSION CONTROL</h1>
+        <p style="color:#888;margin-top:5px;">Autonomous Business Network | {len(sovereign.ventures)} Ventures | {bookie_status["active_bets"]} Active Bets</p>
+    </div>
+
+    <div class="main">
+        <div class="panel">
+            <h2>SOVEREIGN STATUS</h2>
+            <div class="big-number">${sov_status["total_revenue"]:,.0f}</div>
+            <p style="color:#888;margin:10px 0;">of ${sov_status["target"]:,.0f} target</p>
+            <div class="progress-bar">
+                <div class="progress-fill" style="width:{min(progress_pct, 100):.1f}%;"></div>
+            </div>
+            <p style="color:{progress_color};font-weight:600;">{progress_pct:.1f}% Complete</p>
+
+            <div class="stats-grid" style="margin-top:20px;">
+                <div class="stat">
+                    <h4>MRR</h4>
+                    <div class="val" style="color:#00ff88;">${sov_status["mrr"]:,.0f}</div>
+                </div>
+                <div class="stat">
+                    <h4>ROI</h4>
+                    <div class="val" style="color:#00ccff;">{sov_status["roi"]:.0f}%</div>
+                </div>
+                <div class="stat">
+                    <h4>Invested</h4>
+                    <div class="val">${sov_status["total_invested"]:,.0f}</div>
+                </div>
+                <div class="stat">
+                    <h4>Strategies</h4>
+                    <div class="val">{sov_status["strategy_pool_size"]}</div>
+                </div>
+            </div>
+
+            <div style="margin-top:20px;">
+                <form action="/api/sovereign/launch-venture" method="POST" style="display:inline;">
+                    <button type="submit" class="btn">Launch Venture</button>
+                </form>
+                <form action="/api/sovereign/generate-strategies" method="POST" style="display:inline;">
+                    <button type="submit" class="btn">Generate Strategies</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>ACTIVE VENTURES</h2>
+            {ventures_html or '<p style="color:#666;">No ventures yet. Generate strategies and launch!</p>'}
+
+            <h2 style="margin-top:20px;">BETS PORTFOLIO</h2>
+            {bets_html or '<p style="color:#666;">No active bets.</p>'}
+
+            <div style="margin-top:15px;">
+                <form action="/api/bookie/place-bet" method="POST" style="display:inline;">
+                    <input type="hidden" name="stake" value="500">
+                    <button type="submit" class="btn">Place $500 Bet</button>
+                </form>
+                <form action="/api/bookie/optimize" method="POST" style="display:inline;">
+                    <button type="submit" class="btn">Optimize Portfolio</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2>CHAT WITH SOVEREIGN</h2>
+            <div class="chat-box" id="chatBox">
+                {''.join([f'<div style="margin-bottom:10px;"><strong style="color:{("#00ff88" if m["sender"]=="sovereign" else "#ffcc00" if m["sender"]=="user" else "#888")}">{m["sender"].upper()}:</strong> {m["content"]}</div>' for m in sovereign.messages[-10:]])}
+            </div>
+            <form action="/api/sovereign/chat" method="POST" class="chat-input">
+                <input type="text" name="message" placeholder="Ask Sovereign anything..." required>
+                <button type="submit" class="btn">Send</button>
+            </form>
+
+            <h2 style="margin-top:20px;">ORACLE INSIGHTS</h2>
+            <div style="background:#1a1a2e;padding:12px;border-radius:8px;">
+                <p style="font-size:12px;color:#888;">Hot Markets:</p>
+                <p style="color:#00ccff;">{', '.join(oracle_status.get("top_markets", ["Analyzing..."]))}</p>
+                <p style="font-size:12px;color:#888;margin-top:10px;">Opportunities: {oracle_status.get("opportunities_count", 0)}</p>
+            </div>
+            <form action="/api/oracle/analyze-trends" method="POST" style="margin-top:10px;">
+                <button type="submit" class="btn">Analyze Trends</button>
+            </form>
+
+            <h2 style="margin-top:20px;">PORTFOLIO STATS</h2>
+            <div class="stats-grid">
+                <div class="stat">
+                    <h4>Bankroll</h4>
+                    <div class="val" style="color:#00ff88;">${bookie_status["total_bankroll"]:,.0f}</div>
+                </div>
+                <div class="stat">
+                    <h4>Win Rate</h4>
+                    <div class="val">{bookie_status["win_rate"]*100:.0f}%</div>
+                </div>
+                <div class="stat">
+                    <h4>Net Profit</h4>
+                    <div class="val" style="color:{'#00ff88' if bookie_status['net_profit']>=0 else '#ff4444'};">${bookie_status["net_profit"]:,.0f}</div>
+                </div>
+                <div class="stat">
+                    <h4>Available</h4>
+                    <div class="val">${bookie_status["available_capital"]:,.0f}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
 
 
 if __name__ == "__main__":
