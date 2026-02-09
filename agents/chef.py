@@ -183,9 +183,21 @@ class AgentChef:
     async def create_agent(self, agent_type: str, custom_config: Dict = None) -> Dict:
         """Create a new agent from blueprint"""
         if agent_type not in self.blueprints:
-            # Ask AI to create a new blueprint
-            blueprint = await self._design_new_agent(agent_type)
-            self.blueprints[agent_type] = blueprint
+            # Try to ask AI to create a new blueprint, fallback to generic
+            try:
+                blueprint = await self._design_new_agent(agent_type)
+                self.blueprints[agent_type] = blueprint
+            except Exception as e:
+                # Fallback to generic blueprint
+                blueprint = AgentBlueprint(
+                    name=f"{agent_type.title()} Agent",
+                    type=AgentType.MARKETING,
+                    role=agent_type,
+                    capabilities=[agent_type],
+                    tools=["execute_task"],
+                    system_prompt=f"You are a {agent_type} specialist."
+                )
+                self.blueprints[agent_type] = blueprint
         else:
             blueprint = self.blueprints[agent_type]
 

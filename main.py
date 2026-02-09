@@ -23,17 +23,28 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 from control_center import control_center
 from agents.chef import chef
 from agents.coder import coder
+from agents.queen import queen
 
 engine_running = True
 cycle_count = 0
 startup_time = None
 activity_log = []  # Track recent agent activities
+daily_goals = []  # Queen's daily goals
 model = genai.GenerativeModel('gemini-2.0-flash')
 
 # Company configuration
-COMPANY_GOAL = os.getenv("COMPANY_GOAL", "Build TestGuard AI - automated QA testing SaaS")
-PRODUCT_NAME = os.getenv("PRODUCT_NAME", "TestGuard AI")
+COMPANY_GOAL = os.getenv("COMPANY_GOAL", "Build VibeSecurity - AI-powered security analysis platform")
+PRODUCT_NAME = os.getenv("PRODUCT_NAME", "VibeSecurity")
 TARGET_MRR = 10000  # $10K MRR goal
+
+# Security Frameworks
+SECURITY_FRAMEWORKS = {
+    "VAPT": ["Network scanning", "Web app testing", "API security", "Auth testing"],
+    "ISO 27001": ["Access control", "Cryptography", "Operations security", "Compliance"],
+    "OWASP Top 10": ["Injection", "Broken Auth", "XSS", "SSRF", "Security Misconfiguration"],
+    "PCI DSS": ["Secure network", "Protect data", "Vulnerability mgmt", "Access control"],
+    "SOC 2": ["Security", "Availability", "Processing Integrity", "Confidentiality"]
+}
 
 
 def log_activity(agent_type: str, action: str, details: str = ""):
@@ -139,22 +150,39 @@ Be specific and actionable. Format as JSON:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global startup_time
+    global startup_time, daily_goals
     startup_time = datetime.now()
 
     print("=" * 60)
-    print("  OPENCLAW - AI COMPANY CONTROL CENTER")
+    print("  VIBESECURITY - AI COMPANY CONTROL CENTER")
     print("=" * 60)
     print(f"  Goal: {COMPANY_GOAL}")
     print("=" * 60)
 
-    # Create agents
-    await chef.create_agent("marketing")
-    await chef.create_agent("coder")
-    await chef.create_agent("branding")
-    await chef.create_agent("sales")
+    # Queen creates managed agents (with error handling)
+    try:
+        await queen.create_managed_agent("product_manager", "Product Strategy & Roadmap")
+        await queen.create_managed_agent("programme_manager", "Execution & Delivery")
+        log_activity("queen", "Created PMs", "product_manager, programme_manager")
+    except Exception as e:
+        log_activity("queen", "Error", f"Could not create PMs: {str(e)[:50]}")
 
-    log_activity("chef", "Spawned agents", "marketing, coder, branding, sales")
+    # Chef creates worker agents (predefined blueprints - no API call needed)
+    try:
+        await chef.create_agent("marketing")
+        await chef.create_agent("coder")
+        await chef.create_agent("branding")
+        await chef.create_agent("sales")
+        log_activity("chef", "Spawned agents", "marketing, coder, branding, sales")
+    except Exception as e:
+        log_activity("chef", "Error", f"Could not spawn agents: {str(e)[:50]}")
+
+    # Queen generates daily goals (minimum 4)
+    try:
+        daily_goals = await queen.generate_daily_goals(COMPANY_GOAL)
+        log_activity("queen", "Daily goals", f"Generated {len(daily_goals)} goals for today")
+    except Exception as e:
+        log_activity("queen", "Error", f"Could not generate goals: {str(e)[:50]}")
 
     # Generate autonomous tasks
     await generate_autonomous_tasks()
@@ -295,7 +323,8 @@ def render_activity_log():
             'branding': '#ffe66d',
             'sales': '#95e1d3',
             'system': '#888',
-            'chef': '#00ff88'
+            'chef': '#00ff88',
+            'queen': '#ff00ff'
         }.get(agent, '#888')
 
         html += f'''<div style="padding:6px 0;border-bottom:1px solid #222;font-size:11px;">
@@ -305,6 +334,49 @@ def render_activity_log():
             <span style="color:#666;margin-left:4px;">{details}</span>
         </div>'''
     return html
+
+
+def render_queen_status():
+    """Render Queen Agent status panel"""
+    status = queen.get_status()
+    goals = queen.daily_goals
+
+    goals_html = ""
+    for g in goals[:4]:
+        status_color = '#00ff88' if g.status == 'completed' else '#ffcc00' if g.status == 'in_progress' else '#888'
+        goals_html += f'''<div style="background:#1a1a2e;padding:10px;border-radius:6px;margin-bottom:8px;border-left:3px solid {status_color};">
+            <div style="font-size:12px;font-weight:600;">{g.title}</div>
+            <div style="font-size:10px;color:#666;margin-top:2px;">→ {g.assigned_to}</div>
+        </div>'''
+
+    if not goals_html:
+        goals_html = '<div style="color:#666;font-size:11px;">Generating goals...</div>'
+
+    frameworks_html = ""
+    for key, fw in queen.security_frameworks.items():
+        pri_color = '#ff4444' if fw.priority == 'critical' else '#ffcc00' if fw.priority == 'high' else '#00ccff'
+        frameworks_html += f'''<span style="display:inline-block;background:#1a1a2e;padding:4px 8px;border-radius:4px;font-size:10px;margin:2px;border:1px solid {pri_color};">{key.upper()}</span>'''
+
+    return f'''
+    <div style="background:linear-gradient(135deg,#1a0033,#330066);border:1px solid #6600cc;border-radius:12px;padding:15px;margin-bottom:15px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <h3 style="font-size:14px;color:#ff00ff;">👑 QUEEN AGENT</h3>
+            <span style="background:#00ff88;color:#000;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:600;">ACTIVE</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:11px;margin-bottom:10px;">
+            <div>Managed Agents: <span style="color:#00ccff;">{status['managed_agents']}</span></div>
+            <div>Goals Today: <span style="color:#ffcc00;">{status['daily_goals']}</span></div>
+            <div>Completed: <span style="color:#00ff88;">{status['goals_completed']}</span></div>
+            <div>Target: <span style="color:#ff6b6b;">4/day</span></div>
+        </div>
+        <div style="margin-bottom:10px;">
+            <div style="font-size:11px;color:#888;margin-bottom:5px;">Security Frameworks:</div>
+            {frameworks_html}
+        </div>
+    </div>
+    <h3 style="font-size:13px;color:#ff00ff;margin-bottom:10px;">Daily Goals</h3>
+    {goals_html}
+    '''
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -326,7 +398,7 @@ async def dashboard():
 <html>
 <head>
     <title>OpenClaw Control Center</title>
-    <meta http-equiv="refresh" content="10">
+    <meta http-equiv="refresh" content="30">
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ font-family: system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }}
@@ -442,11 +514,13 @@ async def dashboard():
         </div>
 
         <div class="panel right">
-            <h2>AI Workforce</h2>
+            {render_queen_status()}
+
+            <h2 style="margin-top:20px;">AI Workforce</h2>
             {agents_html}
 
             <h2 style="margin-top:20px;">Activity Log</h2>
-            <div style="background:#1a1a2e;border-radius:8px;padding:12px;max-height:300px;overflow-y:auto;">
+            <div style="background:#1a1a2e;border-radius:8px;padding:12px;max-height:200px;overflow-y:auto;">
                 {activity_html}
             </div>
         </div>
@@ -507,6 +581,67 @@ async def get_status():
 @app.get("/health")
 async def health():
     return {"status": "healthy", "cycles": cycle_count}
+
+
+@app.get("/api/queen/status")
+async def queen_status():
+    """Get Queen Agent status"""
+    return queen.get_status()
+
+
+@app.get("/api/queen/goals")
+async def queen_goals():
+    """Get today's daily goals"""
+    return {
+        "goals": [
+            {
+                "id": g.id,
+                "title": g.title,
+                "description": g.description,
+                "assigned_to": g.assigned_to,
+                "status": g.status
+            }
+            for g in queen.daily_goals
+        ],
+        "target": queen.metrics["daily_goal"],
+        "completed": len([g for g in queen.daily_goals if g.status == "completed"])
+    }
+
+
+@app.post("/api/queen/generate-goals")
+async def regenerate_goals():
+    """Regenerate daily goals"""
+    try:
+        goals = await queen.generate_daily_goals(COMPANY_GOAL)
+        log_activity("queen", "Regenerated", f"{len(goals)} new daily goals")
+        return {"success": True, "goals_count": len(goals)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/security/frameworks")
+async def security_frameworks():
+    """Get available security frameworks"""
+    return {
+        name: {
+            "name": fw.name,
+            "description": fw.description,
+            "controls": fw.controls,
+            "priority": fw.priority
+        }
+        for name, fw in queen.security_frameworks.items()
+    }
+
+
+@app.post("/api/security/analyze")
+async def analyze_security(target: str = Form(...)):
+    """Analyze security requirements for a target"""
+    try:
+        analysis = await queen.analyze_security_requirements(target)
+        log_activity("queen", "Security Analysis", f"Analyzed: {target[:30]}")
+        return analysis
+    except Exception as e:
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":
