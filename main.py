@@ -24,6 +24,7 @@ from control_center import control_center
 from agents.chef import chef
 from agents.coder import coder
 from agents.queen import queen
+from agents.overseer import overseer
 
 engine_running = True
 cycle_count = 0
@@ -190,8 +191,13 @@ async def lifespan(app: FastAPI):
     # Start the autonomous engine
     asyncio.create_task(run_engine())
 
+    # Start Overseer monitoring (every 2 hours)
+    asyncio.create_task(overseer.start_monitoring())
+    log_activity("overseer", "Started", "Monitoring every 2 hours")
+
     yield
     print("Shutting down...")
+    await overseer.stop_monitoring()
 
 
 async def run_engine():
@@ -305,6 +311,31 @@ def render_agents(agents):
     return html
 
 
+def render_overseer_status():
+    """Render Overseer Agent status panel"""
+    status = overseer.get_status()
+    health = status.get("latest_health_score")
+    health_color = "#00ff88" if health and health >= 70 else "#ffcc00" if health and health >= 50 else "#ff4444"
+
+    last_check = status.get("last_check", "Never")
+    if last_check != "Never":
+        last_check = last_check.split("T")[1].split(".")[0] if "T" in last_check else last_check
+
+    return f'''
+    <div style="background:linear-gradient(135deg,#1a1a00,#333300);border:1px solid #666600;border-radius:8px;padding:12px;margin-bottom:15px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <h4 style="font-size:12px;color:#ffcc00;">OVERSEER</h4>
+            <span style="background:{'#00ff88' if status.get('running') else '#ff4444'};color:#000;padding:2px 6px;border-radius:8px;font-size:9px;font-weight:600;">{'ACTIVE' if status.get('running') else 'STOPPED'}</span>
+        </div>
+        <div style="font-size:11px;color:#888;">
+            <div>Health: <span style="color:{health_color};font-weight:600;">{health:.0f if health else 'N/A'}%</span></div>
+            <div>Checks: {status.get('total_checks', 0)} | Blockers: {status.get('active_blockers', 0)}</div>
+            <div>Last: {last_check} | Next: 2h</div>
+        </div>
+    </div>
+    '''
+
+
 def render_activity_log():
     global activity_log
     if not activity_log:
@@ -324,7 +355,8 @@ def render_activity_log():
             'sales': '#95e1d3',
             'system': '#888',
             'chef': '#00ff88',
-            'queen': '#ff00ff'
+            'queen': '#ff00ff',
+            'overseer': '#ffcc00'
         }.get(agent, '#888')
 
         html += f'''<div style="padding:6px 0;border-bottom:1px solid #222;font-size:11px;">
@@ -515,8 +547,9 @@ async def dashboard():
 
         <div class="panel right">
             {render_queen_status()}
+            {render_overseer_status()}
 
-            <h2 style="margin-top:20px;">AI Workforce</h2>
+            <h2 style="margin-top:10px;">AI Workforce</h2>
             {agents_html}
 
             <h2 style="margin-top:20px;">Activity Log</h2>
@@ -642,6 +675,84 @@ async def analyze_security(target: str = Form(...)):
         return analysis
     except Exception as e:
         return {"error": str(e)}
+
+
+# ============== OVERSEER ENDPOINTS ==============
+
+@app.get("/api/overseer/status")
+async def overseer_status():
+    """Get Overseer Agent status"""
+    return overseer.get_status()
+
+
+@app.get("/api/overseer/health-history")
+async def overseer_health_history(limit: int = 10):
+    """Get system health score history"""
+    return {
+        "history": overseer.get_health_history(limit),
+        "current_health": overseer.status_history[-1].health_score if overseer.status_history else None
+    }
+
+
+@app.post("/api/overseer/run-check")
+async def run_overseer_check():
+    """Manually trigger an Overseer check cycle"""
+    try:
+        status = await overseer.run_check_cycle()
+        log_activity("overseer", "Manual Check", f"Health: {status.health_score:.1f}")
+        return {
+            "success": True,
+            "health_score": status.health_score,
+            "blockers_found": len(status.blockers),
+            "recommendations": status.recommendations
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/overseer/blockers")
+async def get_blockers():
+    """Get current system blockers"""
+    return {
+        "active_blockers": [
+            {
+                "id": b.id,
+                "type": b.type.value,
+                "description": b.description,
+                "severity": b.severity,
+                "detected_at": b.detected_at.isoformat(),
+                "resolved": b.resolved
+            }
+            for b in overseer.blockers.values()
+            if not b.resolved
+        ],
+        "total_blockers": len(overseer.blockers)
+    }
+
+
+@app.get("/api/overseer/actions")
+async def get_overseer_actions(limit: int = 20):
+    """Get recent Overseer actions"""
+    actions = sorted(
+        overseer.actions.values(),
+        key=lambda a: a.created_at,
+        reverse=True
+    )[:limit]
+
+    return {
+        "actions": [
+            {
+                "id": a.id,
+                "type": a.type.value,
+                "description": a.description,
+                "target": a.target,
+                "status": a.status,
+                "created_at": a.created_at.isoformat(),
+                "completed_at": a.completed_at.isoformat() if a.completed_at else None
+            }
+            for a in actions
+        ]
+    }
 
 
 if __name__ == "__main__":

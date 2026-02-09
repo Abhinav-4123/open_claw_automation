@@ -2,6 +2,7 @@
 from .chef import chef, AgentChef, AgentType
 from .coder import coder, CoderAgent
 from .queen import queen, QueenAgent
+from .overseer import overseer, OverseerAgent
 
 __all__ = [
     "chef",
@@ -10,5 +11,7 @@ __all__ = [
     "coder",
     "CoderAgent",
     "queen",
-    "QueenAgent"
+    "QueenAgent",
+    "overseer",
+    "OverseerAgent"
 ]
