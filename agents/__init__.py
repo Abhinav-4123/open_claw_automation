@@ -4,6 +4,8 @@ from .orchestrator import OrchestratorAgent
 from .marketing import MarketingAgent
 from .feedback import FeedbackAgent
 from .improver import ImproverAgent
+from .chef import chef, AgentChef, AgentType
+from .coder import coder, CoderAgent
 
 __all__ = [
     "BaseAgent",
@@ -12,5 +14,10 @@ __all__ = [
     "OrchestratorAgent",
     "MarketingAgent",
     "FeedbackAgent",
-    "ImproverAgent"
+    "ImproverAgent",
+    "chef",
+    "AgentChef",
+    "AgentType",
+    "coder",
+    "CoderAgent"
 ]
