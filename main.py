@@ -281,7 +281,7 @@ async def dashboard():
                 </div>
                 <div class="metric-card">
                     <h4>Active Agents</h4>
-                    <div class="value">{brain_status.get('agents', {{}}).get('active', 0)}</div>
+                    <div class="value">{brain_status.get('agents', {}).get('active', 0) if isinstance(brain_status.get('agents'), dict) else 0}</div>
                 </div>
             </div>
 
@@ -362,7 +362,7 @@ async def dashboard():
 
             <div class="footer">
                 <p>Auto-refreshes every 15 seconds | Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                <p style="margin-top: 5px;">Goal: $1M MRR | Strategy: {status.get('brain', {{}}).get('metrics', {{}}).get('strategy', 'Outreach')}</p>
+                <p style="margin-top: 5px;">Goal: $1M MRR | Strategy: Outreach</p>
             </div>
         </div>
     </body>
