@@ -1025,10 +1025,24 @@ async def launch_venture():
         return {"success": False, "error": str(e)}
 
 
+class ChatMessage(BaseModel):
+    message: str
+
 @app.post("/api/sovereign/chat")
-async def chat_with_sovereign(message: str = Form(...)):
-    """Chat with the Sovereign"""
+async def chat_with_sovereign(request: Request):
+    """Chat with the Sovereign - accepts both JSON and Form data"""
     try:
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            data = await request.json()
+            message = data.get("message", "")
+        else:
+            form = await request.form()
+            message = form.get("message", "")
+
+        if not message:
+            return {"response": "Please send a message"}
+
         response = await sovereign.process_user_message(message)
         log_activity("sovereign", "Chat", message[:30])
         return {"response": response}
@@ -1160,19 +1174,14 @@ def add_user_action(action: str, priority: str = "medium", category: str = "gene
 
 @app.get("/command", response_class=HTMLResponse)
 async def command_center(request: Request):
-    """Centralized Command Center - The main dashboard"""
-    # Check authentication
+    """Centralized Command Center - Modern Notion-like Dashboard"""
     session = check_auth(request)
     if not session:
         return RedirectResponse(url="/login", status_code=303)
 
     global activity_log, user_action_items
 
-    # Get user info
     user_name = session.get("name", "User")
-    user_email = session.get("email", "")
-
-    # Gather all data
     sov_status = sovereign.get_status()
     bookie_status = bookie.get_portfolio_summary()
     oracle_status = oracle.get_status()
@@ -1181,293 +1190,996 @@ async def command_center(request: Request):
     dashboard_data = control_center.get_dashboard_data()
     all_agents = chef.get_all_agents()
 
-    # Calculate progress
     total_revenue = sov_status["total_revenue"]
     target = sov_status["target"]
     progress_pct = (total_revenue / target) * 100 if target > 0 else 0
+    health_score = overseer_status.get('latest_health_score', 80)
 
-    # Build agent cards
-    agents_html = ""
-    core_agents = [
-        ("sovereign", "active", "Orchestrating business strategy", 0),
-        ("oracle", "active", "Analyzing market trends", oracle_status.get("trend_analyses", 0)),
-        ("bookie", "active", f"Managing {bookie_status['active_bets']} bets", bookie_status.get("active_bets", 0)),
-        ("queen", "active", f"Tracking {queen_status['daily_goals']} daily goals", queen_status.get("goals_completed", 0)),
-        ("overseer", "active", f"System health: {overseer_status.get('latest_health_score', 'N/A')}%", overseer_status.get("total_checks", 0)),
-        ("chef", "active", f"Managing {len(all_agents)} worker agents", len(all_agents)),
-    ]
+    # Build ventures data
+    ventures = sovereign.get_ventures()[:6]
+    ventures_json = json.dumps([{"name": v["name"], "status": v["status"], "revenue": v["revenue"], "roi": v.get("roi", 0)} for v in ventures])
 
-    for agent_type, status, task, done in core_agents:
-        agents_html += get_agent_card_html(agent_type, status, task, done)
-
-    # Worker agents
-    worker_html = ""
-    for agent in all_agents[:6]:
-        agent_type = agent.get("type", "unknown")
-        current = agent.get("current_task", "Idle")
-        done = agent.get("tasks_completed", 0)
-        worker_html += get_agent_card_html(agent_type, "active" if current else "idle", current, done)
-
-    # Tasks
-    pending_tasks = dashboard_data.get("pending_tasks", [])[:5]
-    active_tasks = dashboard_data.get("active_tasks", [])[:5]
-    completed_tasks = dashboard_data.get("recent_completed", [])[:5]
-
-    def render_task_list(tasks, status_type):
-        if not tasks:
-            return '<div style="color:#666;padding:10px;text-align:center;">No tasks</div>'
-        html = ""
-        colors = {"pending": "#888", "active": "#ffcc00", "completed": "#00ff88"}
-        for t in tasks:
-            html += f'''<div style="background:#1a1a2e;padding:10px;border-radius:6px;margin-bottom:6px;border-left:3px solid {colors.get(status_type, '#888')};">
-                <div style="font-size:12px;font-weight:500;">{t.get("title", "Task")[:40]}</div>
-                <div style="font-size:10px;color:#666;margin-top:3px;">{t.get("category", "general")} | {t.get("priority", "medium")}</div>
-            </div>'''
-        return html
-
-    pending_html = render_task_list(pending_tasks, "pending")
-    active_html = render_task_list(active_tasks, "active")
-    completed_html = render_task_list(completed_tasks, "completed")
-
-    # User action items
-    pending_actions = [a for a in user_action_items if not a.get("completed")]
-    action_html = ""
-    if pending_actions:
-        for a in pending_actions[:5]:
-            pri_color = {"high": "#ff4444", "medium": "#ffcc00", "low": "#00ccff"}.get(a["priority"], "#888")
-            action_html += f'''<div style="background:#2a1a1a;padding:12px;border-radius:8px;margin-bottom:8px;border-left:3px solid {pri_color};">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="font-size:13px;">{a["action"]}</span>
-                    <span style="font-size:10px;color:{pri_color};">{a["priority"].upper()}</span>
-                </div>
-                <div style="font-size:10px;color:#666;margin-top:4px;">{a["category"]}</div>
-            </div>'''
-    else:
-        action_html = '<div style="color:#00ff88;padding:20px;text-align:center;">All caught up! No pending actions.</div>'
-
-    # Ventures summary
-    ventures = sovereign.get_ventures()[:4]
-    ventures_html = ""
-    for v in ventures:
-        s_color = {"profitable": "#00ff88", "scaling": "#00ccff", "building": "#ffcc00"}.get(v["status"], "#888")
-        ventures_html += f'''<div style="background:#1a2a1a;padding:10px;border-radius:6px;margin-bottom:6px;border-left:3px solid {s_color};">
-            <div style="font-size:12px;font-weight:500;">{v["name"][:30]}</div>
-            <div style="font-size:10px;color:#888;">${v["revenue"]:,.0f} rev | {v["status"]}</div>
-        </div>'''
-
-    if not ventures_html:
-        ventures_html = '<div style="color:#666;padding:10px;text-align:center;">No ventures yet</div>'
+    # Build chat history
+    chat_messages = sovereign.messages[-10:]
+    chat_json = json.dumps([{"sender": m.get("sender", "system"), "content": m.get("content", "")} for m in chat_messages])
 
     # Activity log
-    recent_activity = activity_log[:8]
-    activity_html = ""
-    for log in recent_activity:
-        agent = log.get("agent", "system")
-        p = get_agent_display(agent)
-        activity_html += f'''<div style="padding:6px 0;border-bottom:1px solid #222;font-size:11px;">
-            <span style="color:#555;">{log.get("time", "")}</span>
-            <span style="color:{p["color"]};margin-left:8px;">{p["emoji"]} {p["name"]}</span>
-            <span style="color:#888;margin-left:8px;">{log.get("action", "")}</span>
-        </div>'''
+    activity_json = json.dumps(activity_log[:15])
 
-    # Chat messages
-    chat_html = ""
-    for m in sovereign.messages[-6:]:
-        sender = m.get("sender", "system")
-        color = "#ff6600" if sender == "sovereign" else "#00ccff" if sender == "user" else "#888"
-        name = "Marcus" if sender == "sovereign" else "You" if sender == "user" else sender
-        chat_html += f'''<div style="margin-bottom:8px;padding:8px;background:#1a1a2e;border-radius:6px;">
-            <strong style="color:{color};">{name}:</strong>
-            <span style="color:#ccc;font-size:12px;"> {m.get("content", "")[:100]}</span>
-        </div>'''
+    # Tasks
+    pending_tasks = dashboard_data.get("pending_tasks", [])[:8]
+    active_tasks = dashboard_data.get("active_tasks", [])[:8]
+    completed_tasks = dashboard_data.get("recent_completed", [])[:8]
 
-    return f"""<!DOCTYPE html>
-<html>
+    return f'''<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>Command Center - OpenClaw</title>
-    <meta http-equiv="refresh" content="30">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenClaw - Command Center</title>
     <style>
+        :root {{
+            --bg-primary: #191919;
+            --bg-secondary: #252525;
+            --bg-tertiary: #2f2f2f;
+            --bg-hover: #373737;
+            --text-primary: #ebebeb;
+            --text-secondary: #9b9b9b;
+            --text-muted: #6b6b6b;
+            --accent: #eb5757;
+            --accent-green: #4dab9a;
+            --accent-blue: #529cca;
+            --accent-yellow: #d9a648;
+            --accent-purple: #9a6dd7;
+            --border: #373737;
+            --shadow: rgba(0,0,0,0.3);
+        }}
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{ font-family: system-ui, sans-serif; background: #0a0a0f; color: #e0e0e0; min-height: 100vh; }}
-        .header {{ background: linear-gradient(135deg, #0a0a0f, #1a1a2e); padding: 15px 25px; border-bottom: 1px solid #333; display: flex; justify-content: space-between; align-items: center; }}
-        .header h1 {{ font-size: 22px; }}
-        .header h1 span {{ background: linear-gradient(90deg, #ff6600, #ffcc00); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
-        .nav {{ display: flex; gap: 15px; }}
-        .nav a {{ color: #888; text-decoration: none; font-size: 13px; padding: 6px 12px; border-radius: 6px; transition: all 0.3s; }}
-        .nav a:hover {{ background: #1a1a2e; color: #fff; }}
-        .nav a.active {{ background: #ff6600; color: #000; }}
-        .main {{ display: grid; grid-template-columns: 280px 1fr 320px; min-height: calc(100vh - 60px); }}
-        .panel {{ padding: 15px; overflow-y: auto; }}
-        .left {{ background: #0d0d12; border-right: 1px solid #222; }}
-        .right {{ background: #0d0d12; border-left: 1px solid #222; }}
-        h2 {{ font-size: 13px; color: #888; text-transform: uppercase; margin-bottom: 12px; letter-spacing: 1px; }}
-        h3 {{ font-size: 12px; color: #666; margin: 15px 0 10px 0; }}
-        .metric-row {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px; }}
-        .metric {{ background: #1a1a2e; padding: 12px; border-radius: 8px; text-align: center; }}
-        .metric h4 {{ font-size: 10px; color: #666; text-transform: uppercase; }}
-        .metric .val {{ font-size: 22px; font-weight: 700; margin-top: 4px; }}
-        .progress-bar {{ background: #222; border-radius: 8px; height: 8px; margin: 8px 0; overflow: hidden; }}
-        .progress-fill {{ background: linear-gradient(90deg, #ff6600, #ffcc00); height: 100%; }}
-        .big-stat {{ text-align: center; padding: 20px; background: linear-gradient(135deg, #1a1a2e, #0a0a0f); border-radius: 12px; margin-bottom: 15px; border: 1px solid #333; }}
-        .big-stat .val {{ font-size: 36px; font-weight: 700; background: linear-gradient(90deg, #00ff88, #00ccff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }}
-        .section {{ background: #111; border: 1px solid #222; border-radius: 10px; padding: 15px; margin-bottom: 15px; }}
-        .btn {{ display: inline-block; padding: 8px 16px; background: linear-gradient(90deg, #ff6600, #ffcc00); color: #000; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 12px; border: none; cursor: pointer; margin: 3px; }}
-        .btn:hover {{ opacity: 0.9; }}
-        .btn-secondary {{ background: #333; color: #fff; }}
-        .chat-box {{ background: #0a0a0f; border: 1px solid #333; border-radius: 8px; padding: 10px; max-height: 200px; overflow-y: auto; margin-bottom: 10px; }}
-        .chat-input {{ display: flex; gap: 8px; }}
-        .chat-input input {{ flex: 1; padding: 8px 12px; background: #1a1a2e; border: 1px solid #333; border-radius: 6px; color: #fff; font-size: 12px; }}
-        .user-actions {{ background: linear-gradient(135deg, #2a1a1a, #1a1a2e); border: 1px solid #ff4444; border-radius: 10px; padding: 15px; margin-bottom: 15px; }}
-        .tabs {{ display: flex; gap: 5px; margin-bottom: 10px; }}
-        .tab {{ padding: 6px 12px; background: #1a1a2e; border-radius: 6px; font-size: 11px; cursor: pointer; }}
-        .tab.active {{ background: #ff6600; color: #000; }}
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.5;
+        }}
+
+        /* Sidebar */
+        .sidebar {{
+            position: fixed;
+            left: 0;
+            top: 0;
+            width: 240px;
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            padding: 16px 8px;
+            display: flex;
+            flex-direction: column;
+        }}
+        .sidebar-header {{
+            padding: 8px 12px;
+            margin-bottom: 8px;
+        }}
+        .sidebar-header h1 {{
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .sidebar-header .logo {{
+            width: 24px;
+            height: 24px;
+            background: linear-gradient(135deg, var(--accent), var(--accent-yellow));
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+        }}
+        .nav-section {{
+            margin-bottom: 16px;
+        }}
+        .nav-section-title {{
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            padding: 8px 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .nav-item {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.15s;
+        }}
+        .nav-item:hover {{ background: var(--bg-hover); color: var(--text-primary); }}
+        .nav-item.active {{ background: var(--bg-tertiary); color: var(--text-primary); }}
+        .nav-item .icon {{ font-size: 16px; width: 20px; text-align: center; }}
+        .nav-item .badge {{
+            margin-left: auto;
+            background: var(--accent);
+            color: white;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 10px;
+        }}
+        .sidebar-footer {{
+            margin-top: auto;
+            padding: 12px;
+            border-top: 1px solid var(--border);
+        }}
+        .user-info {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .user-avatar {{
+            width: 32px;
+            height: 32px;
+            background: var(--accent-purple);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 14px;
+        }}
+        .user-details {{ flex: 1; }}
+        .user-name {{ font-size: 13px; font-weight: 500; }}
+        .user-role {{ font-size: 11px; color: var(--text-muted); }}
+
+        /* Main Content */
+        .main {{
+            margin-left: 240px;
+            min-height: 100vh;
+        }}
+        .topbar {{
+            position: sticky;
+            top: 0;
+            background: var(--bg-primary);
+            border-bottom: 1px solid var(--border);
+            padding: 12px 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 100;
+        }}
+        .topbar-left {{
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }}
+        .topbar h2 {{
+            font-size: 20px;
+            font-weight: 600;
+        }}
+        .health-badge {{
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 12px;
+            background: var(--bg-tertiary);
+            border-radius: 20px;
+            font-size: 12px;
+        }}
+        .health-dot {{
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+        }}
+
+        .content {{
+            padding: 24px;
+            max-width: 1400px;
+        }}
+
+        /* Stats Row */
+        .stats-row {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }}
+        .stat-card {{
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 20px;
+        }}
+        .stat-card .label {{
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .stat-card .value {{
+            font-size: 28px;
+            font-weight: 700;
+        }}
+        .stat-card .change {{
+            font-size: 12px;
+            margin-top: 4px;
+        }}
+        .stat-card .change.positive {{ color: var(--accent-green); }}
+        .stat-card .change.negative {{ color: var(--accent); }}
+
+        /* Progress Card */
+        .progress-card {{
+            background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }}
+        .progress-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }}
+        .progress-title {{
+            font-size: 14px;
+            color: var(--text-secondary);
+        }}
+        .progress-amount {{
+            font-size: 36px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+        .progress-bar {{
+            height: 8px;
+            background: var(--bg-primary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }}
+        .progress-fill {{
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-green), var(--accent-blue));
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }}
+        .progress-text {{
+            font-size: 12px;
+            color: var(--text-muted);
+        }}
+
+        /* Grid Layout */
+        .grid-2 {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }}
+        .grid-3 {{
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 24px;
+        }}
+
+        /* Card */
+        .card {{
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }}
+        .card-header {{
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .card-title {{
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .card-body {{
+            padding: 16px 20px;
+        }}
+
+        /* Chat */
+        .chat-container {{
+            display: flex;
+            flex-direction: column;
+            height: 400px;
+        }}
+        .chat-messages {{
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }}
+        .chat-message {{
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+        }}
+        .chat-message.user {{
+            align-self: flex-end;
+            background: var(--accent-blue);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }}
+        .chat-message.ai {{
+            align-self: flex-start;
+            background: var(--bg-tertiary);
+            border-bottom-left-radius: 4px;
+        }}
+        .chat-message .sender {{
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            opacity: 0.8;
+        }}
+        .chat-input-container {{
+            padding: 16px;
+            border-top: 1px solid var(--border);
+            display: flex;
+            gap: 12px;
+        }}
+        .chat-input {{
+            flex: 1;
+            padding: 12px 16px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 14px;
+            outline: none;
+        }}
+        .chat-input:focus {{ border-color: var(--accent-blue); }}
+        .chat-input::placeholder {{ color: var(--text-muted); }}
+
+        /* Button */
+        .btn {{
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .btn-primary {{
+            background: var(--accent-blue);
+            color: white;
+        }}
+        .btn-primary:hover {{ opacity: 0.9; }}
+        .btn-secondary {{
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }}
+        .btn-secondary:hover {{ background: var(--bg-hover); }}
+        .btn-accent {{
+            background: linear-gradient(135deg, var(--accent), var(--accent-yellow));
+            color: white;
+        }}
+        .btn:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+        }}
+
+        /* Quick Actions */
+        .quick-actions {{
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }}
+        .action-btn {{
+            padding: 8px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }}
+        .action-btn:hover {{
+            background: var(--bg-hover);
+            border-color: var(--accent-blue);
+        }}
+        .action-btn:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+        }}
+        .action-btn .spinner {{
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--text-muted);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            display: none;
+        }}
+        .action-btn.loading .spinner {{ display: block; }}
+        .action-btn.loading .icon {{ display: none; }}
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+
+        /* Task List */
+        .task-list {{
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }}
+        .task-item {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }}
+        .task-item:hover {{ background: var(--bg-tertiary); }}
+        .task-status {{
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }}
+        .task-status.pending {{ background: var(--text-muted); }}
+        .task-status.active {{ background: var(--accent-yellow); }}
+        .task-status.completed {{ background: var(--accent-green); }}
+        .task-content {{
+            flex: 1;
+            min-width: 0;
+        }}
+        .task-title {{
+            font-size: 13px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .task-meta {{
+            font-size: 11px;
+            color: var(--text-muted);
+        }}
+        .task-priority {{
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            text-transform: uppercase;
+            font-weight: 600;
+        }}
+        .task-priority.high {{ background: rgba(235,87,87,0.2); color: var(--accent); }}
+        .task-priority.medium {{ background: rgba(217,166,72,0.2); color: var(--accent-yellow); }}
+        .task-priority.low {{ background: rgba(77,171,154,0.2); color: var(--accent-green); }}
+
+        /* Venture List */
+        .venture-item {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }}
+        .venture-icon {{
+            width: 36px;
+            height: 36px;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }}
+        .venture-info {{ flex: 1; }}
+        .venture-name {{ font-size: 13px; font-weight: 500; }}
+        .venture-stats {{ font-size: 11px; color: var(--text-muted); }}
+        .venture-status {{
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }}
+        .venture-status.building {{ background: rgba(217,166,72,0.2); color: var(--accent-yellow); }}
+        .venture-status.profitable {{ background: rgba(77,171,154,0.2); color: var(--accent-green); }}
+        .venture-status.scaling {{ background: rgba(82,156,202,0.2); color: var(--accent-blue); }}
+
+        /* Activity */
+        .activity-item {{
+            display: flex;
+            gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+        }}
+        .activity-item:last-child {{ border-bottom: none; }}
+        .activity-dot {{
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-top: 6px;
+            flex-shrink: 0;
+        }}
+        .activity-content {{
+            flex: 1;
+        }}
+        .activity-text {{
+            font-size: 13px;
+        }}
+        .activity-time {{
+            font-size: 11px;
+            color: var(--text-muted);
+        }}
+
+        /* Toast */
+        .toast {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 16px 24px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px var(--shadow);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }}
+        .toast.show {{
+            transform: translateY(0);
+            opacity: 1;
+        }}
+        .toast.success {{ border-left: 4px solid var(--accent-green); }}
+        .toast.error {{ border-left: 4px solid var(--accent); }}
+        .toast.info {{ border-left: 4px solid var(--accent-blue); }}
+
+        /* Empty State */
+        .empty-state {{
+            text-align: center;
+            padding: 32px;
+            color: var(--text-muted);
+        }}
+        .empty-state .icon {{
+            font-size: 32px;
+            margin-bottom: 12px;
+        }}
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>🚀 <span>COMMAND CENTER</span></h1>
-        <div class="nav">
-            <a href="/command" class="active">Command</a>
-            <a href="/profit">Profit</a>
-            <a href="/">Tasks</a>
-            <a href="/docs">API</a>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>
+                <div class="logo">O</div>
+                OpenClaw
+            </h1>
         </div>
-        <div style="display:flex;align-items:center;gap:15px;">
-            <div style="font-size:12px;color:#888;">
-                Cycle #{cycle_count} | Health: {overseer_status.get('latest_health_score', 'N/A')}%
+
+        <nav class="nav-section">
+            <div class="nav-section-title">Dashboards</div>
+            <a href="/command" class="nav-item active">
+                <span class="icon">📊</span> Command Center
+            </a>
+            <a href="/profit" class="nav-item">
+                <span class="icon">💰</span> Profit Tracker
+            </a>
+            <a href="/" class="nav-item">
+                <span class="icon">📋</span> Task Manager
+            </a>
+        </nav>
+
+        <nav class="nav-section">
+            <div class="nav-section-title">AI Agents</div>
+            <a href="#agents" class="nav-item" onclick="scrollToSection('agents')">
+                <span class="icon">🎯</span> Marcus (Sovereign)
+            </a>
+            <a href="#chat" class="nav-item" onclick="scrollToSection('chat')">
+                <span class="icon">🔮</span> Luna (Oracle)
+            </a>
+            <a href="#ventures" class="nav-item" onclick="scrollToSection('ventures')">
+                <span class="icon">💵</span> Tony (Bookie)
+                <span class="badge">{bookie_status['active_bets']}</span>
+            </a>
+        </nav>
+
+        <nav class="nav-section">
+            <div class="nav-section-title">Tools</div>
+            <a href="/docs" class="nav-item">
+                <span class="icon">📚</span> API Docs
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="user-info">
+                <div class="user-avatar">{user_name[0].upper()}</div>
+                <div class="user-details">
+                    <div class="user-name">{user_name}</div>
+                    <div class="user-role">Admin</div>
+                </div>
+                <a href="/logout" style="color:var(--text-muted);font-size:18px;" title="Logout">⏻</a>
             </div>
-            <div style="display:flex;align-items:center;gap:10px;padding-left:15px;border-left:1px solid #333;">
-                <span style="color:#ff6600;font-size:12px;">{user_name}</span>
-                <a href="/logout" style="color:#888;font-size:11px;text-decoration:none;">Logout</a>
+        </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main">
+        <div class="topbar">
+            <div class="topbar-left">
+                <h2>Command Center</h2>
+                <div class="health-badge">
+                    <div class="health-dot" style="background:{'var(--accent-green)' if health_score >= 70 else 'var(--accent-yellow)' if health_score >= 50 else 'var(--accent)'}"></div>
+                    Health: {health_score:.0f}%
+                </div>
+            </div>
+            <div class="quick-actions">
+                <button class="action-btn" onclick="executeAction('generate-strategies')">
+                    <span class="icon">✨</span>
+                    <span class="spinner"></span>
+                    Generate Ideas
+                </button>
+                <button class="action-btn" onclick="executeAction('launch-venture')">
+                    <span class="icon">🚀</span>
+                    <span class="spinner"></span>
+                    Launch Venture
+                </button>
+                <button class="action-btn" onclick="executeAction('analyze-trends')">
+                    <span class="icon">📈</span>
+                    <span class="spinner"></span>
+                    Analyze Market
+                </button>
+                <button class="action-btn" onclick="executeAction('run-check')">
+                    <span class="icon">🔍</span>
+                    <span class="spinner"></span>
+                    Health Check
+                </button>
             </div>
         </div>
-    </div>
 
-    <div class="main">
-        <!-- LEFT: AGENT TEAM -->
-        <div class="panel left">
-            <h2>🤖 Agent Team</h2>
-            {agents_html}
-
-            <h3>Worker Agents</h3>
-            {worker_html if worker_html else '<div style="color:#666;font-size:11px;">No workers spawned yet</div>'}
-        </div>
-
-        <!-- CENTER: MAIN CONTENT -->
-        <div class="panel">
-            <!-- Progress to $1M -->
-            <div class="big-stat">
-                <div style="font-size:12px;color:#888;">PROGRESS TO $1M</div>
-                <div class="val">${total_revenue:,.0f}</div>
+        <div class="content">
+            <!-- Progress Card -->
+            <div class="progress-card">
+                <div class="progress-header">
+                    <div>
+                        <div class="progress-title">Mission Progress</div>
+                        <div class="progress-amount">${total_revenue:,.0f}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div class="progress-title">Target</div>
+                        <div style="font-size:24px;font-weight:600;color:var(--text-secondary);">$1,000,000</div>
+                    </div>
+                </div>
                 <div class="progress-bar">
                     <div class="progress-fill" style="width:{min(progress_pct, 100):.1f}%;"></div>
                 </div>
-                <div style="font-size:12px;color:#888;">{progress_pct:.2f}% Complete</div>
+                <div class="progress-text">{progress_pct:.2f}% complete - ${target - total_revenue:,.0f} to go</div>
             </div>
 
-            <div class="metric-row">
-                <div class="metric">
-                    <h4>MRR</h4>
-                    <div class="val" style="color:#00ff88;">${sov_status['mrr']:,.0f}</div>
+            <!-- Stats Row -->
+            <div class="stats-row">
+                <div class="stat-card">
+                    <div class="label">Monthly Revenue</div>
+                    <div class="value" style="color:var(--accent-green);">${sov_status['mrr']:,.0f}</div>
+                    <div class="change positive">MRR</div>
                 </div>
-                <div class="metric">
-                    <h4>Ventures</h4>
-                    <div class="val" style="color:#00ccff;">{sov_status['ventures_count']}</div>
+                <div class="stat-card">
+                    <div class="label">Active Ventures</div>
+                    <div class="value" style="color:var(--accent-blue);">{sov_status['ventures_count']}</div>
+                    <div class="change">{sov_status.get('ventures_profitable', 0)} profitable</div>
                 </div>
-                <div class="metric">
-                    <h4>Active Bets</h4>
-                    <div class="val" style="color:#ffcc00;">{bookie_status['active_bets']}</div>
+                <div class="stat-card">
+                    <div class="label">Bankroll</div>
+                    <div class="value" style="color:var(--accent-yellow);">${bookie_status['total_bankroll']:,.0f}</div>
+                    <div class="change">{bookie_status['active_bets']} active bets</div>
                 </div>
-                <div class="metric">
-                    <h4>Win Rate</h4>
-                    <div class="val">{bookie_status['win_rate']*100:.0f}%</div>
-                </div>
-            </div>
-
-            <!-- YOUR ACTION ITEMS -->
-            <div class="user-actions">
-                <h2 style="color:#ff4444;">⚡ YOUR ACTION ITEMS</h2>
-                {action_html}
-            </div>
-
-            <!-- Task Boards -->
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
-                <div class="section">
-                    <h2>📋 Pending</h2>
-                    {pending_html}
-                </div>
-                <div class="section">
-                    <h2>🔄 In Progress</h2>
-                    {active_html}
-                </div>
-                <div class="section">
-                    <h2>✅ Completed</h2>
-                    {completed_html}
+                <div class="stat-card">
+                    <div class="label">Win Rate</div>
+                    <div class="value">{bookie_status['win_rate']*100:.0f}%</div>
+                    <div class="change {'positive' if bookie_status['net_profit'] >= 0 else 'negative'}">${bookie_status['net_profit']:,.0f} net</div>
                 </div>
             </div>
 
-            <!-- Quick Actions -->
-            <div class="section">
-                <h2>⚡ Quick Actions</h2>
-                <form action="/api/sovereign/generate-strategies" method="POST" style="display:inline;">
-                    <button type="submit" class="btn">Generate Strategies</button>
-                </form>
-                <form action="/api/sovereign/launch-venture" method="POST" style="display:inline;">
-                    <button type="submit" class="btn">Launch Venture</button>
-                </form>
-                <form action="/api/oracle/analyze-trends" method="POST" style="display:inline;">
-                    <button type="submit" class="btn btn-secondary">Analyze Trends</button>
-                </form>
-                <form action="/api/bookie/place-bet" method="POST" style="display:inline;">
-                    <input type="hidden" name="stake" value="500">
-                    <button type="submit" class="btn btn-secondary">Place $500 Bet</button>
-                </form>
-                <form action="/api/overseer/run-check" method="POST" style="display:inline;">
-                    <button type="submit" class="btn btn-secondary">Run Health Check</button>
-                </form>
-            </div>
-        </div>
-
-        <!-- RIGHT: VENTURES & CHAT -->
-        <div class="panel right">
-            <!-- Chat with Marcus -->
-            <div class="section">
-                <h2>💬 Chat with Marcus (The Mastermind)</h2>
-                <div class="chat-box">
-                    {chat_html if chat_html else '<div style="color:#666;text-align:center;padding:20px;">Start a conversation...</div>'}
+            <!-- Main Grid -->
+            <div class="grid-2">
+                <!-- Chat with Marcus -->
+                <div class="card" id="chat">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span>🎯</span> Chat with Marcus
+                        </div>
+                        <span style="font-size:12px;color:var(--text-muted);">The Mastermind</span>
+                    </div>
+                    <div class="chat-container">
+                        <div class="chat-messages" id="chatMessages">
+                            <!-- Messages will be loaded here -->
+                        </div>
+                        <div class="chat-input-container">
+                            <input type="text" class="chat-input" id="chatInput" placeholder="Ask Marcus anything about strategy..." onkeypress="if(event.key==='Enter')sendMessage()">
+                            <button class="btn btn-primary" onclick="sendMessage()">Send</button>
+                        </div>
+                    </div>
                 </div>
-                <form action="/api/sovereign/chat" method="POST" class="chat-input">
-                    <input type="text" name="message" placeholder="Ask Marcus anything..." required>
-                    <button type="submit" class="btn">Send</button>
-                </form>
+
+                <!-- Ventures -->
+                <div class="card" id="ventures">
+                    <div class="card-header">
+                        <div class="card-title">
+                            <span>🚀</span> Active Ventures
+                        </div>
+                        <button class="btn btn-secondary" onclick="executeAction('launch-venture')" style="font-size:12px;padding:6px 12px;">+ New</button>
+                    </div>
+                    <div class="card-body" id="venturesList">
+                        <!-- Ventures will be loaded here -->
+                    </div>
+                </div>
             </div>
 
-            <!-- Active Ventures -->
-            <div class="section">
-                <h2>🚀 Active Ventures</h2>
-                {ventures_html}
-            </div>
-
-            <!-- Oracle Insights -->
-            <div class="section">
-                <h2>🔮 Luna's Insights</h2>
-                <div style="font-size:11px;color:#888;">
-                    <div>Opportunities Found: <span style="color:#9933ff;">{oracle_status.get('opportunities_count', 0)}</span></div>
-                    <div>Hot Markets: <span style="color:#9933ff;">{', '.join(oracle_status.get('top_markets', ['Analyzing...']))[:50]}</span></div>
+            <!-- Tasks Grid -->
+            <div class="grid-3" id="agents">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><span>📋</span> Pending</div>
+                        <span style="font-size:12px;color:var(--text-muted);">{len(pending_tasks)}</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="task-list" id="pendingTasks"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><span>🔄</span> In Progress</div>
+                        <span style="font-size:12px;color:var(--text-muted);">{len(active_tasks)}</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="task-list" id="activeTasks"></div>
+                    </div>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><span>✅</span> Completed</div>
+                        <span style="font-size:12px;color:var(--text-muted);">{len(completed_tasks)}</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="task-list" id="completedTasks"></div>
+                    </div>
                 </div>
             </div>
 
             <!-- Activity Feed -->
-            <div class="section">
-                <h2>📊 Activity Feed</h2>
-                <div style="max-height:150px;overflow-y:auto;">
-                    {activity_html if activity_html else '<div style="color:#666;font-size:11px;">No activity yet</div>'}
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title"><span>📊</span> Activity Feed</div>
+                    <span style="font-size:12px;color:var(--text-muted);">Live updates</span>
+                </div>
+                <div class="card-body" style="max-height:300px;overflow-y:auto;" id="activityFeed">
+                    <!-- Activity will be loaded here -->
                 </div>
             </div>
         </div>
-    </div>
+    </main>
+
+    <!-- Toast -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // Data from server
+        const chatHistory = {chat_json};
+        const ventures = {ventures_json};
+        const activities = {activity_json};
+        const pendingTasks = {json.dumps([dict(t) for t in pending_tasks])};
+        const activeTasks = {json.dumps([dict(t) for t in active_tasks])};
+        const completedTasks = {json.dumps([dict(t) for t in completed_tasks])};
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {{
+            renderChat();
+            renderVentures();
+            renderTasks();
+            renderActivity();
+        }});
+
+        // Render chat messages
+        function renderChat() {{
+            const container = document.getElementById('chatMessages');
+            if (chatHistory.length === 0) {{
+                container.innerHTML = '<div class="empty-state"><div class="icon">💬</div><p>Start a conversation with Marcus</p></div>';
+                return;
+            }}
+            container.innerHTML = chatHistory.map(m => `
+                <div class="chat-message ${{m.sender === 'user' ? 'user' : 'ai'}}">
+                    <div class="sender">${{m.sender === 'sovereign' ? 'Marcus' : m.sender === 'user' ? 'You' : m.sender}}</div>
+                    ${{m.content}}
+                </div>
+            `).join('');
+            container.scrollTop = container.scrollHeight;
+        }}
+
+        // Send chat message
+        async function sendMessage() {{
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (!message) return;
+
+            // Add user message to UI
+            const container = document.getElementById('chatMessages');
+            container.innerHTML += `<div class="chat-message user"><div class="sender">You</div>${{message}}</div>`;
+            container.scrollTop = container.scrollHeight;
+            input.value = '';
+            input.disabled = true;
+
+            try {{
+                const response = await fetch('/api/sovereign/chat', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{message: message}})
+                }});
+                const data = await response.json();
+
+                if (data.response) {{
+                    container.innerHTML += `<div class="chat-message ai"><div class="sender">Marcus</div>${{data.response}}</div>`;
+                    container.scrollTop = container.scrollHeight;
+                }}
+            }} catch (err) {{
+                showToast('Failed to send message', 'error');
+            }}
+            input.disabled = false;
+            input.focus();
+        }}
+
+        // Execute quick action
+        async function executeAction(action) {{
+            const btn = event.target.closest('.action-btn');
+            btn.classList.add('loading');
+            btn.disabled = true;
+
+            const endpoints = {{
+                'generate-strategies': '/api/sovereign/generate-strategies',
+                'launch-venture': '/api/sovereign/launch-venture',
+                'analyze-trends': '/api/oracle/analyze-trends',
+                'run-check': '/api/overseer/run-check'
+            }};
+
+            try {{
+                const response = await fetch(endpoints[action], {{method: 'POST'}});
+                const data = await response.json();
+
+                if (data.success !== false) {{
+                    showToast(getSuccessMessage(action, data), 'success');
+                    setTimeout(() => location.reload(), 1500);
+                }} else {{
+                    showToast(data.error || 'Action failed', 'error');
+                }}
+            }} catch (err) {{
+                showToast('Request failed', 'error');
+            }}
+
+            btn.classList.remove('loading');
+            btn.disabled = false;
+        }}
+
+        function getSuccessMessage(action, data) {{
+            const messages = {{
+                'generate-strategies': `Generated ${{data.count || 0}} new strategies`,
+                'launch-venture': `Launched: ${{data.venture || 'New venture'}}`,
+                'analyze-trends': 'Market analysis complete',
+                'run-check': `Health check: ${{data.health_score || 'OK'}}%`
+            }};
+            return messages[action] || 'Action completed';
+        }}
+
+        // Render ventures
+        function renderVentures() {{
+            const container = document.getElementById('venturesList');
+            if (ventures.length === 0) {{
+                container.innerHTML = '<div class="empty-state"><div class="icon">🚀</div><p>No ventures yet. Launch one!</p></div>';
+                return;
+            }}
+            container.innerHTML = ventures.map(v => `
+                <div class="venture-item">
+                    <div class="venture-icon">${{v.status === 'profitable' ? '💰' : v.status === 'scaling' ? '📈' : '🔨'}}</div>
+                    <div class="venture-info">
+                        <div class="venture-name">${{v.name}}</div>
+                        <div class="venture-stats">$${{v.revenue.toLocaleString()}} revenue · ${{v.roi.toFixed(0)}}% ROI</div>
+                    </div>
+                    <span class="venture-status ${{v.status}}">${{v.status}}</span>
+                </div>
+            `).join('');
+        }}
+
+        // Render tasks
+        function renderTasks() {{
+            renderTaskList('pendingTasks', pendingTasks, 'pending');
+            renderTaskList('activeTasks', activeTasks, 'active');
+            renderTaskList('completedTasks', completedTasks, 'completed');
+        }}
+
+        function renderTaskList(containerId, tasks, status) {{
+            const container = document.getElementById(containerId);
+            if (tasks.length === 0) {{
+                container.innerHTML = '<div class="empty-state" style="padding:16px;"><p>No tasks</p></div>';
+                return;
+            }}
+            container.innerHTML = tasks.map(t => `
+                <div class="task-item">
+                    <div class="task-status ${{status}}"></div>
+                    <div class="task-content">
+                        <div class="task-title">${{t.title || 'Task'}}</div>
+                        <div class="task-meta">${{t.category || 'general'}}</div>
+                    </div>
+                    <span class="task-priority ${{t.priority || 'medium'}}">${{t.priority || 'med'}}</span>
+                </div>
+            `).join('');
+        }}
+
+        // Render activity
+        function renderActivity() {{
+            const container = document.getElementById('activityFeed');
+            if (activities.length === 0) {{
+                container.innerHTML = '<div class="empty-state"><div class="icon">📊</div><p>No activity yet</p></div>';
+                return;
+            }}
+            const colors = {{
+                'sovereign': 'var(--accent)',
+                'oracle': 'var(--accent-purple)',
+                'bookie': 'var(--accent-green)',
+                'queen': 'var(--accent-yellow)',
+                'overseer': 'var(--accent-blue)',
+                'coder': 'var(--accent-blue)',
+                'marketing': 'var(--accent)'
+            }};
+            container.innerHTML = activities.slice(0, 10).map(a => `
+                <div class="activity-item">
+                    <div class="activity-dot" style="background:${{colors[a.agent] || 'var(--text-muted)'}}"></div>
+                    <div class="activity-content">
+                        <div class="activity-text"><strong>${{a.agent}}</strong> ${{a.action}}</div>
+                        <div class="activity-time">${{a.time}} · ${{a.details || ''}}</div>
+                    </div>
+                </div>
+            `).join('');
+        }}
+
+        // Toast notification
+        function showToast(message, type = 'info') {{
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast ' + type + ' show';
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }}
+
+        // Scroll to section
+        function scrollToSection(id) {{
+            document.getElementById(id)?.scrollIntoView({{behavior: 'smooth'}});
+        }}
+    </script>
 </body>
-</html>"""
+</html>'''
 
 
 # ============== PROFIT DASHBOARD ==============
