@@ -10,44 +10,138 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
-        :root {
-            --primary: #00ff88;
-            --primary-dark: #00cc6a;
-            --primary-glow: rgba(0, 255, 136, 0.15);
-            --secondary: #00d4ff;
-            --accent: #a855f7;
-            --bg-dark: #0a0a0f;
-            --bg-sidebar: #0d0d14;
-            --bg-card: #12121a;
-            --bg-card-hover: #1a1a25;
-            --bg-input: #0f0f18;
-            --border: #1e1e2e;
-            --border-light: #2a2a3e;
+        /* Theme Variables - Dark Mode (Default) */
+        :root, [data-theme="dark"] {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --primary-light: #3b82f6;
+            --primary-glow: rgba(37, 99, 235, 0.15);
+            --secondary: #10b981;
+            --accent: #8b5cf6;
+            --bg-main: #191919;
+            --bg-sidebar: #202020;
+            --bg-card: #262626;
+            --bg-card-hover: #303030;
+            --bg-input: #1a1a1a;
+            --bg-hover: rgba(255, 255, 255, 0.05);
+            --border: #333333;
+            --border-light: #404040;
             --text: #ffffff;
-            --text-secondary: #c4c4d4;
-            --text-muted: #6b6b7e;
-            --success: #00ff88;
-            --error: #ff4757;
-            --warning: #ffa502;
-            --info: #00d4ff;
-            --critical: #ff0040;
-            --high: #ff4757;
-            --medium: #ffa502;
-            --low: #00d4ff;
-            --p0: #ff0040;
-            --p1: #ff4757;
-            --p2: #ffa502;
+            --text-secondary: #a3a3a3;
+            --text-muted: #737373;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --info: #3b82f6;
+            --critical: #dc2626;
+            --high: #ef4444;
+            --medium: #f59e0b;
+            --low: #3b82f6;
+            --p0: #dc2626;
+            --p1: #ef4444;
+            --p2: #f59e0b;
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+            --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.4);
+            --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.5);
+            --radius-sm: 6px;
+            --radius-md: 8px;
+            --radius-lg: 12px;
+            --transition-fast: 150ms;
+            --transition-normal: 200ms;
+            --transition-slow: 300ms;
         }
 
+        /* Light Theme */
+        [data-theme="light"] {
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --primary-light: #3b82f6;
+            --primary-glow: rgba(37, 99, 235, 0.1);
+            --secondary: #059669;
+            --accent: #7c3aed;
+            --bg-main: #ffffff;
+            --bg-sidebar: #f9fafb;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f3f4f6;
+            --bg-input: #f9fafb;
+            --bg-hover: rgba(0, 0, 0, 0.03);
+            --border: #e5e7eb;
+            --border-light: #d1d5db;
+            --text: #111827;
+            --text-secondary: #4b5563;
+            --text-muted: #9ca3af;
+            --success: #16a34a;
+            --error: #dc2626;
+            --warning: #d97706;
+            --info: #2563eb;
+            --critical: #b91c1c;
+            --high: #dc2626;
+            --medium: #d97706;
+            --low: #2563eb;
+            --p0: #b91c1c;
+            --p1: #dc2626;
+            --p2: #d97706;
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.07);
+            --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Notion-style Color Accents */
+        .accent-red { --accent-color: #eb5757; }
+        .accent-orange { --accent-color: #f2994a; }
+        .accent-yellow { --accent-color: #f2c94c; }
+        .accent-green { --accent-color: #27ae60; }
+        .accent-blue { --accent-color: #2f80ed; }
+        .accent-purple { --accent-color: #9b51e0; }
+        .accent-pink { --accent-color: #eb57a3; }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        html { font-size: 14px; }
+        html { font-size: 14px; scroll-behavior: smooth; }
 
         body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: var(--bg-dark);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--bg-main);
             color: var(--text);
             min-height: 100vh;
             overflow-x: hidden;
+            transition: background var(--transition-normal), color var(--transition-normal);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Smooth Page Transitions */
+        .page-transition {
+            animation: pageIn var(--transition-slow) ease-out;
+        }
+
+        @keyframes pageIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Notion-style Selection */
+        ::selection {
+            background: var(--primary-glow);
+            color: var(--primary);
+        }
+
+        /* Better Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--border-light);
         }
 
         /* Layout */
@@ -144,6 +238,142 @@
             border-radius: 10px;
             min-width: 16px;
             text-align: center;
+        }
+
+        /* Header Controls - Notion Style */
+        .header-btn {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all var(--transition-fast);
+        }
+
+        .header-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--text);
+            border-color: var(--border-light);
+        }
+
+        .header-dropdown {
+            position: relative;
+        }
+
+        .dropdown-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-lg);
+            min-width: 140px;
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-8px);
+            transition: all var(--transition-fast);
+            z-index: 100;
+        }
+
+        .dropdown-menu.active {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .dropdown-menu button {
+            display: block;
+            width: 100%;
+            padding: 10px 16px;
+            text-align: left;
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: background var(--transition-fast);
+        }
+
+        .dropdown-menu button:hover {
+            background: var(--bg-hover);
+            color: var(--text);
+        }
+
+        .dropdown-menu button:first-child {
+            border-radius: var(--radius-md) var(--radius-md) 0 0;
+        }
+
+        .dropdown-menu button:last-child {
+            border-radius: 0 0 var(--radius-md) var(--radius-md);
+        }
+
+        /* Theme Toggle */
+        .theme-toggle {
+            padding: 8px;
+        }
+
+        .theme-toggle .sun-icon {
+            display: none;
+        }
+
+        .theme-toggle .moon-icon {
+            display: block;
+        }
+
+        [data-theme="light"] .theme-toggle .sun-icon {
+            display: block;
+        }
+
+        [data-theme="light"] .theme-toggle .moon-icon {
+            display: none;
+        }
+
+        /* Live Indicator - Monitoring Style */
+        .live-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 14px;
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            border-radius: var(--radius-md);
+            color: var(--success);
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .live-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            animation: livePulse 2s ease-in-out infinite;
+        }
+
+        @keyframes livePulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.9); }
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.online {
+            background: var(--success);
+        }
+
+        .status-dot.offline {
+            background: var(--error);
         }
 
         /* Main Tabs */
@@ -857,16 +1087,43 @@
         <main class="main">
             <header class="header">
                 <div>
-                    <h1 style="font-size:20px;font-weight:700;" id="pageTitle">NEXUS QA</h1>
-                    <p style="font-size:12px;color:var(--text-muted);margin-top:2px;" id="pageSubtitle">Quality Intelligence Platform</p>
+                    <h1 style="font-size:20px;font-weight:700;" id="pageTitle" data-i18n="app.title">NEXUS QA</h1>
+                    <p style="font-size:12px;color:var(--text-muted);margin-top:2px;" id="pageSubtitle" data-i18n="app.subtitle">Quality Intelligence Platform</p>
                 </div>
                 <div style="display:flex;gap:12px;align-items:center;">
-                    <div id="apiStatus" style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--bg-card);border-radius:10px;border:1px solid var(--border);">
-                        <span style="width:8px;height:8px;background:var(--success);border-radius:50%;"></span>
-                        <span style="font-size:12px;color:var(--text-muted);">Connected</span>
+                    <!-- Live Indicator -->
+                    <div class="live-indicator" id="liveIndicator">
+                        <span class="live-dot"></span>
+                        <span data-i18n="status.monitoring">Monitoring</span>
+                    </div>
+                    <!-- Language Selector -->
+                    <div class="header-dropdown">
+                        <button class="header-btn" id="langBtn" onclick="toggleDropdown('langDropdown')">
+                            <span id="currentLang">EN</span>
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M2.5 4.5L6 8L9.5 4.5H2.5Z"/></svg>
+                        </button>
+                        <div class="dropdown-menu" id="langDropdown">
+                            <button onclick="setLanguage('en')">English</button>
+                            <button onclick="setLanguage('es')">Español</button>
+                            <button onclick="setLanguage('fr')">Français</button>
+                            <button onclick="setLanguage('de')">Deutsch</button>
+                            <button onclick="setLanguage('ja')">日本語</button>
+                            <button onclick="setLanguage('zh')">中文</button>
+                            <button onclick="setLanguage('hi')">हिंदी</button>
+                        </div>
+                    </div>
+                    <!-- Theme Toggle -->
+                    <button class="header-btn theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
+                        <svg class="sun-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                        <svg class="moon-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    </button>
+                    <!-- Status -->
+                    <div id="apiStatus" style="display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--bg-card);border-radius:var(--radius-md);border:1px solid var(--border);">
+                        <span class="status-dot online"></span>
+                        <span style="font-size:12px;color:var(--text-muted);" data-i18n="status.connected">Connected</span>
                     </div>
                     <button class="btn btn-primary" onclick="openModal('newScan')">
-                        <span>+</span> New Scan
+                        <span>+</span> <span data-i18n="actions.newScan">New Scan</span>
                     </button>
                 </div>
             </header>
@@ -983,6 +1240,194 @@
     <div class="ftue-confetti" id="ftueConfetti"></div>
 
     <script>
+    // ============== THEME & I18N ==============
+
+    // Translation strings
+    const translations = {
+        en: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': 'Quality Intelligence Platform',
+            'status.monitoring': 'Monitoring',
+            'status.connected': 'Connected',
+            'status.disconnected': 'Disconnected',
+            'actions.newScan': 'New Scan',
+            'tabs.overview': 'Overview',
+            'tabs.security': 'Security & VAPT',
+            'tabs.journeys': 'Feature Journeys',
+            'tabs.recommendations': 'Recommendations',
+            'cards.healthScore': 'Health Score',
+            'cards.securityScore': 'Security Score',
+            'cards.coverage': 'Test Coverage',
+            'cards.pending': 'Pending Actions',
+            'modal.startScan': 'Start Security Scan',
+            'modal.targetUrl': 'Target URL',
+            'modal.scanType': 'Scan Type',
+            'modal.cancel': 'Cancel',
+            'modal.start': 'Start Scan',
+            'toast.scanStarted': 'Security scan started',
+            'toast.resolved': 'Recommendation marked as resolved'
+        },
+        es: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': 'Plataforma de Inteligencia de Calidad',
+            'status.monitoring': 'Monitoreando',
+            'status.connected': 'Conectado',
+            'status.disconnected': 'Desconectado',
+            'actions.newScan': 'Nuevo Escaneo',
+            'tabs.overview': 'Vista General',
+            'tabs.security': 'Seguridad y VAPT',
+            'tabs.journeys': 'Flujos de Usuario',
+            'tabs.recommendations': 'Recomendaciones',
+            'cards.healthScore': 'Puntuación de Salud',
+            'cards.securityScore': 'Puntuación de Seguridad',
+            'cards.coverage': 'Cobertura de Pruebas',
+            'cards.pending': 'Acciones Pendientes',
+            'modal.startScan': 'Iniciar Escaneo de Seguridad',
+            'modal.targetUrl': 'URL Objetivo',
+            'modal.scanType': 'Tipo de Escaneo',
+            'modal.cancel': 'Cancelar',
+            'modal.start': 'Iniciar',
+            'toast.scanStarted': 'Escaneo de seguridad iniciado',
+            'toast.resolved': 'Recomendación marcada como resuelta'
+        },
+        fr: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': 'Plateforme d\'Intelligence Qualité',
+            'status.monitoring': 'Surveillance',
+            'status.connected': 'Connecté',
+            'status.disconnected': 'Déconnecté',
+            'actions.newScan': 'Nouveau Scan',
+            'tabs.overview': 'Aperçu',
+            'tabs.security': 'Sécurité et VAPT',
+            'tabs.journeys': 'Parcours Utilisateur',
+            'tabs.recommendations': 'Recommandations'
+        },
+        de: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': 'Qualitätsintelligenz-Plattform',
+            'status.monitoring': 'Überwachung',
+            'status.connected': 'Verbunden',
+            'status.disconnected': 'Getrennt',
+            'actions.newScan': 'Neuer Scan',
+            'tabs.overview': 'Übersicht',
+            'tabs.security': 'Sicherheit & VAPT',
+            'tabs.journeys': 'Benutzerreisen',
+            'tabs.recommendations': 'Empfehlungen'
+        },
+        ja: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': '品質インテリジェンスプラットフォーム',
+            'status.monitoring': '監視中',
+            'status.connected': '接続済み',
+            'status.disconnected': '切断',
+            'actions.newScan': '新規スキャン',
+            'tabs.overview': '概要',
+            'tabs.security': 'セキュリティ＆VAPT',
+            'tabs.journeys': 'ユーザージャーニー',
+            'tabs.recommendations': '推奨事項'
+        },
+        zh: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': '质量智能平台',
+            'status.monitoring': '监控中',
+            'status.connected': '已连接',
+            'status.disconnected': '已断开',
+            'actions.newScan': '新建扫描',
+            'tabs.overview': '概览',
+            'tabs.security': '安全与渗透测试',
+            'tabs.journeys': '用户旅程',
+            'tabs.recommendations': '建议'
+        },
+        hi: {
+            'app.title': 'NEXUS QA',
+            'app.subtitle': 'गुणवत्ता बुद्धिमत्ता मंच',
+            'status.monitoring': 'निगरानी',
+            'status.connected': 'जुड़ा हुआ',
+            'status.disconnected': 'विच्छेद',
+            'actions.newScan': 'नया स्कैन',
+            'tabs.overview': 'अवलोकन',
+            'tabs.security': 'सुरक्षा और VAPT',
+            'tabs.journeys': 'उपयोगकर्ता यात्राएं',
+            'tabs.recommendations': 'सिफारिशें'
+        }
+    };
+
+    let currentLanguage = 'en';
+
+    // Get language from user's location/browser
+    function detectUserLanguage() {
+        const stored = localStorage.getItem('nexus_language');
+        if (stored && translations[stored]) return stored;
+
+        const browserLang = navigator.language?.split('-')[0] || 'en';
+        return translations[browserLang] ? browserLang : 'en';
+    }
+
+    function setLanguage(lang) {
+        if (!translations[lang]) lang = 'en';
+        currentLanguage = lang;
+        localStorage.setItem('nexus_language', lang);
+        document.getElementById('currentLang').textContent = lang.toUpperCase();
+        applyTranslations();
+        closeAllDropdowns();
+    }
+
+    function t(key) {
+        return translations[currentLanguage]?.[key] || translations.en?.[key] || key;
+    }
+
+    function applyTranslations() {
+        document.querySelectorAll('[data-i18n]').forEach(el => {
+            const key = el.getAttribute('data-i18n');
+            el.textContent = t(key);
+        });
+    }
+
+    // Theme functions
+    function getPreferredTheme() {
+        const stored = localStorage.getItem('nexus_theme');
+        if (stored) return stored;
+        return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    }
+
+    function setTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+        localStorage.setItem('nexus_theme', theme);
+    }
+
+    function toggleTheme() {
+        const current = document.documentElement.getAttribute('data-theme') || 'dark';
+        setTheme(current === 'dark' ? 'light' : 'dark');
+    }
+
+    // Dropdown functions
+    function toggleDropdown(id) {
+        const dropdown = document.getElementById(id);
+        const isActive = dropdown.classList.contains('active');
+        closeAllDropdowns();
+        if (!isActive) {
+            dropdown.classList.add('active');
+        }
+    }
+
+    function closeAllDropdowns() {
+        document.querySelectorAll('.dropdown-menu').forEach(d => d.classList.remove('active'));
+    }
+
+    // Close dropdowns when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.header-dropdown')) {
+            closeAllDropdowns();
+        }
+    });
+
+    // Initialize theme and language on load
+    (function initThemeAndLang() {
+        setTheme(getPreferredTheme());
+        currentLanguage = detectUserLanguage();
+        document.getElementById('currentLang').textContent = currentLanguage.toUpperCase();
+    })();
+
     // ============== STATE ==============
     const Store = {
         state: {
