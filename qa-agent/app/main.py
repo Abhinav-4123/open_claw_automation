@@ -1,7 +1,6 @@
 """
-QA Testing Agent API
-Autonomous QA testing for SaaS applications
-With integrated Security Framework Scanning
+NEXUS QA - Quality Intelligence Platform
+AI-powered autonomous QA testing with comprehensive security scanning
 """
 import os
 import uuid
@@ -25,12 +24,21 @@ from .agent import QAAgent
 from .reporter import ReportGenerator
 from .alerts import AlertManager
 from .billing import router as billing_router
-from .security_scanner import SecurityScanner, generate_security_report, Framework
+from .security_scanner import SecurityScanner as LegacySecurityScanner, generate_security_report, Framework
+
+# NEXUS QA imports
+from .security import SecurityScanner, get_scanner, ScanConfig
+from .journeys import JourneyDetector, JourneyMapper, detect_journeys
+from .engines import (
+    ClarificationEngine, ClarificationType, ClarificationRequest,
+    RecommendationsEngine, Priority, get_recommendations_engine
+)
+from .database import get_db
 
 app = FastAPI(
-    title="TestGuard AI",
-    description="AI-powered autonomous QA testing with security framework scanning",
-    version="2.0.0"
+    title="NEXUS QA",
+    description="Quality Intelligence Platform - AI-powered QA testing with 80+ security checks",
+    version="3.0.0"
 )
 
 # Enable CORS for dashboard
@@ -47,6 +55,11 @@ app.include_router(billing_router)
 
 # Initialize alert manager
 alert_manager = AlertManager()
+
+# Initialize NEXUS QA engines
+clarification_engine = ClarificationEngine()
+recommendations_engine = get_recommendations_engine()
+journey_mapper = JourneyMapper()
 
 # Store test results in memory (use Redis/DB in production)
 test_results = {}
@@ -464,6 +477,481 @@ async def get_stats():
             "completed": len(completed_scans),
             "average_score": round(avg_score)
         }
+    }
+
+
+# ============================================================
+# NEXUS QA - Enhanced Security Endpoints (80+ checks)
+# ============================================================
+
+nexus_scan_results = {}
+
+
+class NexusScanRequest(BaseModel):
+    url: HttpUrl
+    categories: Optional[List[str]] = None  # Filter categories
+    include_passive: bool = True
+    include_active: bool = True
+
+
+@app.get("/security/categories")
+async def get_security_categories():
+    """Get all 8 security check categories with their check counts."""
+    scanner = get_scanner()
+    return {
+        "categories": [
+            {
+                "id": "data_security",
+                "name": "Data Security",
+                "description": "PII detection, encryption, data masking",
+                "check_count": 10,
+                "compliance": ["GDPR", "PCI-DSS", "ISO 27001"]
+            },
+            {
+                "id": "credentials",
+                "name": "Credentials & Secrets",
+                "description": "API keys, tokens, hardcoded secrets",
+                "check_count": 10,
+                "compliance": ["OWASP", "CWE", "SOC 2"]
+            },
+            {
+                "id": "rate_limiting",
+                "name": "Rate Limiting & DoS",
+                "description": "Brute force protection, rate limits",
+                "check_count": 10,
+                "compliance": ["OWASP", "NIST"]
+            },
+            {
+                "id": "cache_storage",
+                "name": "Cache & Storage",
+                "description": "localStorage, cookies, CDN caching",
+                "check_count": 10,
+                "compliance": ["OWASP", "PCI-DSS"]
+            },
+            {
+                "id": "auth",
+                "name": "Authentication & Authorization",
+                "description": "Session management, RBAC, IDOR",
+                "check_count": 12,
+                "compliance": ["OWASP", "CWE", "ISO 27001"]
+            },
+            {
+                "id": "injection",
+                "name": "Injection Vulnerabilities",
+                "description": "SQL, XSS, SSTI, command injection",
+                "check_count": 12,
+                "compliance": ["OWASP", "CWE", "PCI-DSS"]
+            },
+            {
+                "id": "infrastructure",
+                "name": "Infrastructure Security",
+                "description": "TLS, HSTS, CSP, CORS headers",
+                "check_count": 10,
+                "compliance": ["OWASP", "NIST", "ISO 27001"]
+            },
+            {
+                "id": "business_logic",
+                "name": "Business Logic",
+                "description": "Workflow bypass, race conditions",
+                "check_count": 8,
+                "compliance": ["OWASP", "CWE"]
+            }
+        ],
+        "total_checks": 82
+    }
+
+
+@app.get("/security/checks")
+async def get_security_checks(category: Optional[str] = None):
+    """Get all 82 security checks, optionally filtered by category."""
+    # Import all checkers
+    from .security.checks import (
+        DataSecurityChecker, CredentialsChecker, RateLimitingChecker,
+        CacheStorageChecker, AuthenticationChecker, InjectionChecker,
+        InfrastructureChecker, BusinessLogicChecker
+    )
+
+    checkers = {
+        "data_security": DataSecurityChecker(),
+        "credentials": CredentialsChecker(),
+        "rate_limiting": RateLimitingChecker(),
+        "cache_storage": CacheStorageChecker(),
+        "auth": AuthenticationChecker(),
+        "injection": InjectionChecker(),
+        "infrastructure": InfrastructureChecker(),
+        "business_logic": BusinessLogicChecker()
+    }
+
+    all_checks = []
+    for cat_id, checker in checkers.items():
+        if category and cat_id != category:
+            continue
+        for check in checker.checks:
+            all_checks.append({
+                "id": check.id,
+                "name": check.name,
+                "description": check.description,
+                "category": cat_id,
+                "severity": check.severity.value,
+                "compliance": check.compliance,
+                "passive": check.passive
+            })
+
+    return {
+        "checks": all_checks,
+        "total": len(all_checks)
+    }
+
+
+@app.post("/security/scan/full")
+async def start_full_security_scan(
+    request: NexusScanRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Start comprehensive security scan with 80+ checks.
+
+    Categories:
+    - data_security, credentials, rate_limiting, cache_storage
+    - auth, injection, infrastructure, business_logic
+    """
+    scan_id = f"nexus_{uuid.uuid4().hex[:8]}"
+
+    nexus_scan_results[scan_id] = {
+        "scan_id": scan_id,
+        "status": "pending",
+        "url": str(request.url),
+        "started_at": datetime.now().isoformat(),
+        "categories": request.categories or ["all"]
+    }
+
+    background_tasks.add_task(
+        run_nexus_scan,
+        scan_id,
+        str(request.url),
+        request.categories,
+        request.include_passive,
+        request.include_active
+    )
+
+    return {
+        "scan_id": scan_id,
+        "status": "pending",
+        "url": str(request.url),
+        "message": "Full security scan started with 82 checks"
+    }
+
+
+async def run_nexus_scan(
+    scan_id: str,
+    url: str,
+    categories: Optional[List[str]],
+    include_passive: bool,
+    include_active: bool
+):
+    """Execute comprehensive NEXUS security scan."""
+    nexus_scan_results[scan_id]["status"] = "running"
+
+    try:
+        scanner = get_scanner()
+
+        # Convert category strings to enums if provided
+        category_enums = None
+        if categories:
+            from .models.security import SecurityCategory
+            category_enums = []
+            for cat in categories:
+                try:
+                    category_enums.append(SecurityCategory(cat))
+                except ValueError:
+                    pass
+
+        config = ScanConfig(
+            url=url,
+            categories=category_enums
+        )
+
+        result = await scanner.scan(config)
+
+        # Build category scores from results
+        category_scores = {}
+        category_data = {}
+        for cat_result in result.category_results:
+            category_scores[cat_result.category.value] = cat_result.score
+            category_data[cat_result.category.value] = {
+                "name": cat_result.category_name,
+                "score": cat_result.score,
+                "passed": cat_result.checks_passed,
+                "failed": cat_result.checks_failed,
+                "total": cat_result.checks_run
+            }
+
+        nexus_scan_results[scan_id].update({
+            "status": "completed",
+            "completed_at": datetime.now().isoformat(),
+            "overall_score": result.overall_score,
+            "category_scores": category_scores,
+            "total_checks": result.total_checks,
+            "passed": result.checks_passed,
+            "failed": result.checks_failed,
+            "categories": category_data,
+            "recommendations_count": len(result.recommendations)
+        })
+
+    except Exception as e:
+        nexus_scan_results[scan_id].update({
+            "status": "failed",
+            "error": str(e),
+            "completed_at": datetime.now().isoformat()
+        })
+
+
+@app.get("/security/scan/full/{scan_id}")
+async def get_nexus_scan(scan_id: str):
+    """Get NEXUS security scan results."""
+    if scan_id not in nexus_scan_results:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return nexus_scan_results[scan_id]
+
+
+# ============================================================
+# NEXUS QA - Journey Detection Endpoints
+# ============================================================
+
+journey_results = {}
+
+
+class JourneyDetectRequest(BaseModel):
+    url: HttpUrl
+    max_depth: int = 2
+    include_forms: bool = True
+
+
+@app.post("/journeys/detect")
+async def detect_user_journeys(
+    request: JourneyDetectRequest,
+    background_tasks: BackgroundTasks
+):
+    """Auto-detect user journeys from a web application."""
+    journey_id = f"journey_{uuid.uuid4().hex[:8]}"
+
+    journey_results[journey_id] = {
+        "journey_id": journey_id,
+        "status": "pending",
+        "url": str(request.url),
+        "started_at": datetime.now().isoformat()
+    }
+
+    background_tasks.add_task(
+        run_journey_detection,
+        journey_id,
+        str(request.url),
+        request.max_depth
+    )
+
+    return {
+        "journey_id": journey_id,
+        "status": "pending",
+        "url": str(request.url)
+    }
+
+
+async def run_journey_detection(journey_id: str, url: str, max_depth: int):
+    """Execute journey detection."""
+    journey_results[journey_id]["status"] = "running"
+
+    try:
+        detector = JourneyDetector()
+        journeys = await detector.detect(url, max_depth=max_depth)
+
+        journey_results[journey_id].update({
+            "status": "completed",
+            "completed_at": datetime.now().isoformat(),
+            "journeys_found": len(journeys),
+            "journeys": [j.to_dict() for j in journeys]
+        })
+
+    except Exception as e:
+        journey_results[journey_id].update({
+            "status": "failed",
+            "error": str(e),
+            "completed_at": datetime.now().isoformat()
+        })
+
+
+@app.get("/journeys")
+async def list_detected_journeys():
+    """List all detected journeys."""
+    return list(journey_results.values())
+
+
+@app.get("/journeys/{journey_id}")
+async def get_journey(journey_id: str):
+    """Get a specific journey detection result."""
+    if journey_id not in journey_results:
+        raise HTTPException(status_code=404, detail="Journey not found")
+    return journey_results[journey_id]
+
+
+@app.get("/journeys/templates")
+async def get_journey_templates():
+    """Get standard journey templates."""
+    return {
+        "categories": journey_mapper.get_categories(),
+        "templates": journey_mapper.get_all_templates()
+    }
+
+
+# ============================================================
+# NEXUS QA - Clarification Endpoints
+# ============================================================
+
+@app.get("/clarifications")
+async def get_pending_clarifications():
+    """Get all pending clarification requests."""
+    return {
+        "pending": [c.to_dict() for c in clarification_engine.get_pending_clarifications()],
+        "count": len(clarification_engine.get_pending_clarifications())
+    }
+
+
+@app.get("/clarifications/{clarification_id}")
+async def get_clarification(clarification_id: str):
+    """Get a specific clarification request."""
+    clarification = clarification_engine.get_clarification(clarification_id)
+    if not clarification:
+        raise HTTPException(status_code=404, detail="Clarification not found")
+    return clarification.to_dict()
+
+
+class ClarificationResponse(BaseModel):
+    response: str
+
+
+@app.post("/clarifications/{clarification_id}/respond")
+async def respond_to_clarification(
+    clarification_id: str,
+    response: ClarificationResponse
+):
+    """Respond to a clarification request."""
+    success = clarification_engine.respond_to_clarification(
+        clarification_id,
+        response.response
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Clarification not found")
+    return {"status": "responded", "clarification_id": clarification_id}
+
+
+# ============================================================
+# NEXUS QA - Recommendations Endpoints
+# ============================================================
+
+@app.get("/recommendations")
+async def get_all_recommendations():
+    """Get all open recommendations."""
+    return {
+        "recommendations": [r.to_dict() for r in recommendations_engine.get_all_recommendations()],
+        "summary": recommendations_engine.get_summary()
+    }
+
+
+@app.get("/recommendations/{priority}")
+async def get_recommendations_by_priority(priority: str):
+    """Get recommendations by priority (P0, P1, P2)."""
+    try:
+        priority_enum = Priority(priority.upper())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid priority. Use P0, P1, or P2")
+
+    recs = recommendations_engine.get_by_priority(priority_enum)
+    return {
+        "priority": priority.upper(),
+        "recommendations": [r.to_dict() for r in recs],
+        "count": len(recs)
+    }
+
+
+@app.post("/recommendations/{rec_id}/resolve")
+async def resolve_recommendation(rec_id: str, resolved_by: Optional[str] = None):
+    """Mark a recommendation as resolved."""
+    success = recommendations_engine.resolve_recommendation(rec_id, resolved_by)
+    if not success:
+        raise HTTPException(status_code=404, detail="Recommendation not found")
+    return {"status": "resolved", "recommendation_id": rec_id}
+
+
+@app.get("/recommendations/export/{format}")
+async def export_recommendations(format: str):
+    """Export recommendations (json, csv, markdown)."""
+    if format not in ["json", "csv", "markdown"]:
+        raise HTTPException(status_code=400, detail="Invalid format. Use json, csv, or markdown")
+
+    return {
+        "format": format,
+        "data": recommendations_engine.export_recommendations(format)
+    }
+
+
+# ============================================================
+# NEXUS QA - Enhanced Stats Endpoints
+# ============================================================
+
+@app.get("/stats/overview")
+async def get_stats_overview():
+    """Get comprehensive NEXUS QA statistics overview."""
+    db = get_db()
+
+    # Get recent scans
+    recent_scans = len(nexus_scan_results)
+    completed_scans = [s for s in nexus_scan_results.values() if s.get("status") == "completed"]
+
+    # Calculate average score
+    avg_score = 0
+    if completed_scans:
+        avg_score = sum(s.get("overall_score", 0) for s in completed_scans) / len(completed_scans)
+
+    # Get recommendations summary
+    rec_summary = recommendations_engine.get_summary()
+
+    # Get test stats
+    total_tests = len(test_results)
+    passed_tests = len([t for t in test_results.values() if t.status == "completed"])
+
+    return {
+        "health_score": round(avg_score),
+        "security_score": round(avg_score),
+        "test_coverage": round((passed_tests / max(total_tests, 1)) * 100),
+        "scans": {
+            "total": recent_scans,
+            "completed": len(completed_scans),
+            "average_score": round(avg_score)
+        },
+        "tests": {
+            "total": total_tests,
+            "passed": passed_tests,
+            "failed": total_tests - passed_tests
+        },
+        "recommendations": rec_summary,
+        "journeys": {
+            "detected": len(journey_results),
+            "categories": journey_mapper.get_categories()
+        },
+        "clarifications": {
+            "pending": len(clarification_engine.get_pending_clarifications())
+        }
+    }
+
+
+@app.get("/stats/trends")
+async def get_stats_trends(days: int = 7):
+    """Get trend data for the past N days."""
+    db = get_db()
+    trends = db.get_trend_data(days)
+
+    return {
+        "days": days,
+        "trends": trends
     }
 
 
