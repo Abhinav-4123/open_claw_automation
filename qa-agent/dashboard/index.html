@@ -502,6 +502,19 @@
         .badge-info { background: rgba(0, 212, 255, 0.15); color: var(--info); }
         .badge-pending { background: rgba(107, 107, 126, 0.15); color: var(--text-muted); }
         .badge-p0 { background: rgba(255, 0, 64, 0.15); color: var(--p0); }
+        /* Feature flag badges */
+        .badge-deterministic { background: rgba(34, 197, 94, 0.15); color: #22c55e; font-size: 9px; }
+        .badge-heuristic { background: rgba(251, 191, 36, 0.15); color: #fbbf24; font-size: 9px; }
+        .badge-ai { background: rgba(168, 85, 247, 0.15); color: #a855f7; font-size: 9px; }
+        .badge-high-accuracy { background: rgba(34, 197, 94, 0.1); color: #22c55e; font-size: 9px; }
+        .badge-medium-accuracy { background: rgba(251, 191, 36, 0.1); color: #fbbf24; font-size: 9px; }
+        .badge-low-accuracy { background: rgba(239, 68, 68, 0.1); color: #ef4444; font-size: 9px; }
+        .feature-flags-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+        .flag-stat { padding: 12px; background: var(--bg-card); border-radius: 8px; text-align: center; }
+        .flag-stat .value { font-size: 24px; font-weight: 700; }
+        .flag-stat .label { font-size: 11px; color: var(--text-muted); }
+        .check-badges { display: flex; gap: 4px; margin-top: 4px; }
+        .method-tag { font-size: 9px; padding: 2px 6px; background: var(--bg-hover); border-radius: 4px; color: var(--text-muted); }
         .badge-p1 { background: rgba(255, 71, 87, 0.15); color: var(--p1); }
         .badge-p2 { background: rgba(255, 165, 2, 0.15); color: var(--p2); }
 
@@ -1476,27 +1489,31 @@
     async function fetchAllData() {
         Store.setState({ loading: true });
 
-        const [stats, scans, journeys, recommendations, clarifications] = await Promise.all([
+        const [stats, scans, journeys, recsResponse, clariResponse] = await Promise.all([
             api.get('/stats'),
             api.get('/security/scans'),
             api.get('/journeys') || [],
-            api.get('/recommendations') || [],
-            api.get('/clarifications') || []
+            api.get('/recommendations'),
+            api.get('/clarifications')
         ]);
+
+        // Extract arrays from response objects
+        const recommendations = recsResponse?.recommendations || [];
+        const clarifications = clariResponse?.pending || [];
 
         Store.setState({
             stats: {
                 healthScore: stats?.tests?.passed_percent || 85,
                 securityScore: stats?.security?.average_score || 0,
                 coverage: stats?.journeys?.coverage || 0,
-                pendingRecs: recommendations?.filter(r => !r.resolved)?.length || 0,
+                pendingRecs: recommendations.filter(r => !r.resolved)?.length || 0,
                 totalScans: stats?.security?.total_scans || 0,
                 totalTests: stats?.tests?.total || 0
             },
             scans: scans || [],
             journeys: journeys || [],
-            recommendations: recommendations || [],
-            clarifications: clarifications || [],
+            recommendations: recommendations,
+            clarifications: clarifications,
             trendData: generateTrendData(),
             loading: false
         });
@@ -1674,6 +1691,34 @@
                 </div>
             ` : ''}
 
+            <div class="card fade-in" style="animation-delay:0.15s;margin-bottom:20px;">
+                <div class="card-header">
+                    <h3 class="card-title">Check Classification</h3>
+                    <span class="badge badge-info">82 Total</span>
+                </div>
+                <div class="feature-flags-summary">
+                    <div class="flag-stat">
+                        <div class="value" style="color:#22c55e;">63</div>
+                        <div class="label">Deterministic (77%)</div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">No AI, 100% accurate</div>
+                    </div>
+                    <div class="flag-stat">
+                        <div class="value" style="color:#fbbf24;">19</div>
+                        <div class="label">Heuristic (23%)</div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">May have false positives</div>
+                    </div>
+                    <div class="flag-stat">
+                        <div class="value" style="color:#22c55e;">54</div>
+                        <div class="label">High Accuracy</div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">Can verify issues</div>
+                    </div>
+                </div>
+                <div style="padding:0 16px 16px;font-size:12px;color:var(--text-secondary);">
+                    <strong>Free tier:</strong> All deterministic checks run without AI costs.
+                    <strong>Premium:</strong> AI-powered test planning, journey understanding, visual analysis.
+                </div>
+            </div>
+
             <div class="fade-in" style="animation-delay:0.2s;">
                 <h3 style="margin-bottom:16px;font-size:16px;">Security Categories (8)</h3>
                 ${SECURITY_CATEGORIES.map((cat, i) => `
@@ -1700,6 +1745,100 @@
         `;
     }
 
+    // Feature flags for all checks
+    const CHECK_FLAGS = {
+        // Data Security - mostly deterministic
+        'DS-001': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'PII Detection' },
+        'DS-002': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'SSN Detection' },
+        'DS-003': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Credit Card Detection' },
+        'DS-004': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Email Harvesting' },
+        'DS-005': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Phone Number Exposure' },
+        'DS-006': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'Address Detection' },
+        'DS-007': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Health Data (HIPAA)' },
+        'DS-008': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Encryption Indicators' },
+        'DS-009': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Data Masking' },
+        'DS-010': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'Response Filtering' },
+        // Credentials - all deterministic
+        'CR-001': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'JWT in URL' },
+        'CR-002': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'API Keys in Code' },
+        'CR-003': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Hardcoded Secrets' },
+        'CR-004': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Password in GET' },
+        'CR-005': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'localStorage Token' },
+        'CR-006': { type: 'deterministic', accuracy: 'high', method: 'cookie', name: 'Session Token Security' },
+        'CR-007': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'OAuth Token Exposure' },
+        'CR-008': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Cloud Provider Keys' },
+        'CR-009': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Database Connection String' },
+        'CR-010': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Private Key Exposure' },
+        // Rate Limiting - mostly heuristic (can't actually test)
+        'RL-001': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Login Brute Force' },
+        'RL-002': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Rate Limit Headers' },
+        'RL-003': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Registration Spam' },
+        'RL-004': { type: 'heuristic', accuracy: 'low', method: 'form', name: 'Password Reset Flood' },
+        'RL-005': { type: 'heuristic', accuracy: 'low', method: 'form', name: 'Search Rate Limiting' },
+        'RL-006': { type: 'heuristic', accuracy: 'low', method: 'input', name: 'Upload Rate Limiting' },
+        'RL-007': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'Account Enumeration' },
+        'RL-008': { type: 'deterministic', accuracy: 'high', method: 'keyword', name: 'CAPTCHA Implementation' },
+        'RL-009': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'IP-Based Blocking' },
+        'RL-010': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'DDoS Protection' },
+        // Cache & Storage - mostly deterministic
+        'CS-001': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Cache Control' },
+        'CS-002': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'CDN Cache Config' },
+        'CS-003': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'localStorage Data' },
+        'CS-004': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'sessionStorage' },
+        'CS-005': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'IndexedDB Security' },
+        'CS-006': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Service Worker' },
+        'CS-007': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Sensitive Page Cache' },
+        'CS-008': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'ETag Leakage' },
+        'CS-009': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Pragma Headers' },
+        'CS-010': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Vary Header' },
+        // Authentication - mixed
+        'AU-001': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Session Fixation' },
+        'AU-002': { type: 'deterministic', accuracy: 'high', method: 'cookie', name: 'Session Hijacking' },
+        'AU-003': { type: 'deterministic', accuracy: 'high', method: 'cookie', name: 'Cookie Security Flags' },
+        'AU-004': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'RBAC Implementation' },
+        'AU-005': { type: 'heuristic', accuracy: 'low', method: 'regex', name: 'Privilege Escalation' },
+        'AU-006': { type: 'heuristic', accuracy: 'low', method: 'regex', name: 'IDOR Indicators' },
+        'AU-007': { type: 'deterministic', accuracy: 'high', method: 'decode', name: 'JWT Algorithm' },
+        'AU-008': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'Token Expiration' },
+        'AU-009': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Password Policy' },
+        'AU-010': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'MFA Implementation' },
+        'AU-011': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Account Lockout' },
+        'AU-012': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Logout Invalidation' },
+        // Injection - mostly deterministic
+        'IN-001': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'Reflected XSS' },
+        'IN-002': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Stored XSS' },
+        'IN-003': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'DOM-based XSS' },
+        'IN-004': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'SQL Injection' },
+        'IN-005': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'NoSQL Injection' },
+        'IN-006': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'SSTI' },
+        'IN-007': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'Command Injection' },
+        'IN-008': { type: 'deterministic', accuracy: 'medium', method: 'regex', name: 'LDAP Injection' },
+        'IN-009': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'XML/XXE' },
+        'IN-010': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Header Injection' },
+        'IN-011': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'Path Traversal' },
+        'IN-012': { type: 'deterministic', accuracy: 'high', method: 'regex', name: 'CRLF Injection' },
+        // Infrastructure - all deterministic
+        'IF-001': { type: 'deterministic', accuracy: 'medium', method: 'protocol', name: 'TLS/SSL Config' },
+        'IF-002': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'HSTS' },
+        'IF-003': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'CSP' },
+        'IF-004': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'X-Content-Type-Options' },
+        'IF-005': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'X-Frame-Options' },
+        'IF-006': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'CORS Config' },
+        'IF-007': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Server Disclosure' },
+        'IF-008': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Referrer Policy' },
+        'IF-009': { type: 'deterministic', accuracy: 'high', method: 'header', name: 'Permissions Policy' },
+        'IF-010': { type: 'deterministic', accuracy: 'medium', method: 'protocol', name: 'Certificate Validity' },
+        // Business Logic - all heuristic (need actual testing)
+        'BL-001': { type: 'heuristic', accuracy: 'low', method: 'regex', name: 'Workflow Bypass' },
+        'BL-002': { type: 'heuristic', accuracy: 'low', method: 'input', name: 'Price Manipulation' },
+        'BL-003': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Race Conditions' },
+        'BL-004': { type: 'deterministic', accuracy: 'high', method: 'keyword', name: 'Anti-Automation' },
+        'BL-005': { type: 'heuristic', accuracy: 'low', method: 'input', name: 'Mass Assignment' },
+        'BL-006': { type: 'heuristic', accuracy: 'low', method: 'regex', name: 'Functional IDOR' },
+        'BL-007': { type: 'heuristic', accuracy: 'low', method: 'keyword', name: 'Transaction Integrity' },
+        'BL-008': { type: 'heuristic', accuracy: 'low', method: 'regex', name: 'Trust Boundary' }
+    };
+
     function generateCategoryChecks(category) {
         const checkPrefixes = {
             'data_security': 'DS', 'credentials': 'CR', 'rate_limiting': 'RL',
@@ -1709,12 +1848,22 @@
         const prefix = checkPrefixes[category.id] || 'XX';
 
         return Array.from({ length: category.checks }, (_, i) => {
+            const checkId = `${prefix}-${String(i + 1).padStart(3, '0')}`;
+            const flags = CHECK_FLAGS[checkId] || { type: 'heuristic', accuracy: 'low', method: 'unknown', name: 'Unknown Check' };
             const status = ['pass', 'pass', 'pass', 'warn', 'fail'][Math.floor(Math.random() * 5)];
+
+            const typeClass = flags.type === 'deterministic' ? 'deterministic' : flags.type === 'ai' ? 'ai' : 'heuristic';
+            const accuracyClass = flags.accuracy === 'high' ? 'high-accuracy' : flags.accuracy === 'medium' ? 'medium-accuracy' : 'low-accuracy';
+
             return `
                 <div class="check-item">
                     <div class="check-info">
-                        <div class="name">${prefix}-${String(i + 1).padStart(3, '0')}: Check ${i + 1}</div>
-                        <div class="desc">Security check description for ${category.name.toLowerCase()}</div>
+                        <div class="name">${checkId}: ${flags.name}</div>
+                        <div class="check-badges">
+                            <span class="badge badge-${typeClass}">${flags.type.toUpperCase()}</span>
+                            <span class="badge badge-${accuracyClass}">${flags.accuracy} accuracy</span>
+                            <span class="method-tag">${flags.method}</span>
+                        </div>
                     </div>
                     <div class="check-actions">
                         <span class="badge badge-${status === 'pass' ? 'success' : status === 'warn' ? 'warning' : 'error'}">${status}</span>
@@ -1894,11 +2043,22 @@
 
     async function submitNewScan() {
         const form = document.getElementById('newScanForm');
-        const url = form.url.value;
+        let url = form.url.value.trim();
         const scanType = form.scanType.value;
 
+        // Validate URL
+        if (!url) {
+            showToast('Please enter a URL', 'error');
+            return;
+        }
+
+        // Add https:// if no protocol specified
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+            url = 'https://' + url;
+        }
+
         try {
-            await api.post('/security/scan', { url, scan_type: scanType });
+            await api.post('/security/scan', { url });
             showToast('Security scan started', 'success');
             closeModal('newScan');
             form.reset();

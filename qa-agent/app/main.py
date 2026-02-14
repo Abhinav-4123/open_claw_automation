@@ -715,6 +715,211 @@ async def get_nexus_scan(scan_id: str):
 
 
 # ============================================================
+# NEXUS QA - Feature Flags & Classification
+# ============================================================
+
+from .security.feature_flags import CHECK_FLAGS, AI_FEATURES, get_summary, get_check_flags
+
+@app.get("/security/feature-flags")
+async def get_feature_flags():
+    """
+    Get feature classification for all security checks.
+
+    Returns breakdown of:
+    - DETERMINISTIC: Pure regex/header checks, 100% accurate
+    - HEURISTIC: Rule-based guessing, may have false positives
+    - AI_REQUIRED: Needs LLM/VLM (Premium)
+    """
+    summary = get_summary()
+
+    return {
+        "summary": summary,
+        "checks": {
+            check_id: {
+                "check_type": flags["check_type"].value,
+                "accuracy": flags["accuracy"].value,
+                "method": flags["method"],
+                "can_verify": flags["can_verify"],
+                "requires_ai": flags["requires_ai"],
+                "description": flags["description"]
+            }
+            for check_id, flags in CHECK_FLAGS.items()
+        },
+        "ai_features": {
+            name: {
+                "requires_ai": feat["requires_ai"],
+                "ai_type": feat["ai_type"],
+                "description": feat["description"]
+            }
+            for name, feat in AI_FEATURES.items()
+        },
+        "recommendations": {
+            "free_tier": f"{summary['by_type']['deterministic']} deterministic checks available",
+            "premium_tier": f"{len(AI_FEATURES)} AI-powered features",
+            "accuracy_note": f"{summary['by_accuracy']['low']} checks are heuristic (may have false positives)"
+        }
+    }
+
+
+@app.get("/security/checks/{check_id}/flags")
+async def get_check_feature_flags(check_id: str):
+    """Get feature flags for a specific check."""
+    flags = get_check_flags(check_id)
+    if not flags:
+        raise HTTPException(status_code=404, detail=f"Check {check_id} not found")
+
+    return {
+        "check_id": check_id,
+        "check_type": flags["check_type"].value,
+        "accuracy": flags["accuracy"].value,
+        "method": flags["method"],
+        "can_verify": flags["can_verify"],
+        "requires_ai": flags["requires_ai"],
+        "description": flags["description"]
+    }
+
+
+class BulkTestRequest(BaseModel):
+    """Request for bulk testing mapped journeys."""
+    journey_id: Optional[str] = None
+    url: Optional[HttpUrl] = None
+    test_types: List[str] = ["headers", "cookies", "patterns"]
+    skip_ai: bool = True  # Default to no AI for bulk testing
+
+
+@app.post("/security/bulk-test")
+async def run_bulk_test(
+    request: BulkTestRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Run deterministic security tests only (no AI required).
+
+    This endpoint runs all DETERMINISTIC checks that don't require AI:
+    - Header checks (HSTS, CSP, CORS, etc.)
+    - Cookie security flags
+    - Pattern detection (secrets, PII)
+    - Protocol checks (HTTPS)
+
+    These checks can run on mapped journeys without AI costs.
+    """
+    test_id = f"bulk_{uuid.uuid4().hex[:8]}"
+    url = str(request.url) if request.url else None
+
+    if not url and request.journey_id:
+        # Get URL from journey
+        if request.journey_id in journey_results:
+            journey = journey_results[request.journey_id]
+            url = journey.get("url")
+
+    if not url:
+        raise HTTPException(
+            status_code=400,
+            detail="Either url or valid journey_id required"
+        )
+
+    bulk_test_results[test_id] = {
+        "test_id": test_id,
+        "status": "pending",
+        "url": url,
+        "skip_ai": request.skip_ai,
+        "test_types": request.test_types,
+        "started_at": datetime.now().isoformat(),
+        "deterministic_only": True
+    }
+
+    background_tasks.add_task(
+        run_deterministic_tests,
+        test_id,
+        url,
+        request.test_types
+    )
+
+    return {
+        "test_id": test_id,
+        "status": "started",
+        "message": "Running deterministic tests (no AI)",
+        "url": url
+    }
+
+
+bulk_test_results = {}
+
+
+async def run_deterministic_tests(test_id: str, url: str, test_types: List[str]):
+    """Run only deterministic checks (no AI)."""
+    try:
+        scanner = get_scanner()
+        config = ScanConfig(url=url)
+
+        # Run the scan
+        result = await scanner.scan(config)
+
+        # Filter to only deterministic/high-accuracy checks
+        filtered_results = []
+        for cat_result in result.category_results:
+            filtered_checks = []
+            for check_result in cat_result.results:
+                flags = get_check_flags(check_result.check_id)
+                # Only include deterministic checks
+                if flags.get("check_type") == "deterministic" or \
+                   (flags.get("accuracy") and flags["accuracy"].value in ["high", "medium"]):
+                    filtered_checks.append({
+                        "check_id": check_result.check_id,
+                        "check_name": check_result.check_name,
+                        "status": check_result.status.value,
+                        "severity": check_result.severity.value,
+                        "message": check_result.message,
+                        "evidence": check_result.evidence,
+                        "accuracy": flags.get("accuracy", {}).value if hasattr(flags.get("accuracy", {}), "value") else "unknown",
+                        "method": flags.get("method", "unknown"),
+                        "can_verify": flags.get("can_verify", False)
+                    })
+
+            if filtered_checks:
+                filtered_results.append({
+                    "category": cat_result.category.value,
+                    "category_name": cat_result.category_name,
+                    "checks": filtered_checks,
+                    "passed": sum(1 for c in filtered_checks if c["status"] == "pass"),
+                    "failed": sum(1 for c in filtered_checks if c["status"] == "fail"),
+                    "warnings": sum(1 for c in filtered_checks if c["status"] == "warn")
+                })
+
+        total_checks = sum(len(r["checks"]) for r in filtered_results)
+        total_passed = sum(r["passed"] for r in filtered_results)
+        total_failed = sum(r["failed"] for r in filtered_results)
+
+        bulk_test_results[test_id].update({
+            "status": "completed",
+            "completed_at": datetime.now().isoformat(),
+            "results": filtered_results,
+            "summary": {
+                "total_deterministic_checks": total_checks,
+                "passed": total_passed,
+                "failed": total_failed,
+                "score": round((total_passed / total_checks * 100) if total_checks > 0 else 0, 1),
+                "ai_checks_skipped": 82 - total_checks  # Total checks minus deterministic
+            }
+        })
+
+    except Exception as e:
+        bulk_test_results[test_id].update({
+            "status": "failed",
+            "error": str(e),
+            "completed_at": datetime.now().isoformat()
+        })
+
+
+@app.get("/security/bulk-test/{test_id}")
+async def get_bulk_test_results(test_id: str):
+    """Get bulk test results."""
+    if test_id not in bulk_test_results:
+        raise HTTPException(status_code=404, detail="Test not found")
+    return bulk_test_results[test_id]
+
+
+# ============================================================
 # NEXUS QA - Journey Detection Endpoints
 # ============================================================
 

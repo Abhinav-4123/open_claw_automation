@@ -15,6 +15,8 @@ from ...models.security import (
     SecurityCheck,
     CheckResult,
     CheckStatus,
+    CheckType,
+    Accuracy,
     Severity
 )
 
@@ -67,7 +69,7 @@ class BaseSecurityChecker(ABC):
         evidence: Optional[str] = None,
         details: Optional[Dict] = None
     ) -> CheckResult:
-        """Create a check result."""
+        """Create a check result with feature flags."""
         return CheckResult(
             check_id=check.id,
             check_name=check.name,
@@ -78,7 +80,13 @@ class BaseSecurityChecker(ABC):
             evidence=evidence,
             remediation=check.remediation if status == CheckStatus.FAIL else None,
             details=details or {},
-            timestamp=datetime.now()
+            timestamp=datetime.now(),
+            # Pass through feature flags from check definition
+            check_type=check.check_type,
+            accuracy=check.accuracy,
+            requires_ai=check.requires_ai,
+            can_verify=check.can_verify,
+            method=check.method
         )
 
     def pass_check(self, check: SecurityCheck, message: str = "Check passed") -> CheckResult:

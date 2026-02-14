@@ -12,6 +12,8 @@ from ...models.security import (
     SecurityCheck,
     CheckResult,
     CheckStatus,
+    CheckType,
+    Accuracy,
     Severity
 )
 
@@ -31,7 +33,11 @@ class InfrastructureChecker(BaseSecurityChecker):
             severity=Severity.HIGH,
             remediation="Use TLS 1.2+ with strong cipher suites",
             cwe_id="CWE-326",
-            pci_dss="4.1"
+            pci_dss="4.1",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.MEDIUM,  # Only checks HTTPS, not TLS version
+            method="protocol",
+            can_verify=False  # Would need SSL handshake inspection
         ),
         SecurityCheck(
             id="IF-002",
@@ -41,7 +47,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             severity=Severity.HIGH,
             remediation="Add Strict-Transport-Security header with max-age >= 31536000",
             cwe_id="CWE-319",
-            owasp_id="A02:2021"
+            owasp_id="A02:2021",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-003",
@@ -51,7 +60,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             severity=Severity.HIGH,
             remediation="Implement strict CSP with no unsafe-inline/eval",
             cwe_id="CWE-1021",
-            owasp_id="A05:2021"
+            owasp_id="A05:2021",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-004",
@@ -60,7 +72,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             description="Checks for X-Content-Type-Options: nosniff",
             severity=Severity.MEDIUM,
             remediation="Add X-Content-Type-Options: nosniff header",
-            cwe_id="CWE-16"
+            cwe_id="CWE-16",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-005",
@@ -70,7 +85,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             severity=Severity.MEDIUM,
             remediation="Add X-Frame-Options: DENY or CSP frame-ancestors",
             cwe_id="CWE-1021",
-            owasp_id="A05:2021"
+            owasp_id="A05:2021",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-006",
@@ -80,7 +98,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             severity=Severity.HIGH,
             remediation="Avoid wildcard (*) origins, whitelist specific domains",
             cwe_id="CWE-942",
-            owasp_id="A05:2021"
+            owasp_id="A05:2021",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-007",
@@ -89,7 +110,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             description="Checks for server version information leakage",
             severity=Severity.LOW,
             remediation="Remove Server, X-Powered-By headers",
-            cwe_id="CWE-200"
+            cwe_id="CWE-200",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-008",
@@ -98,7 +122,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             description="Validates Referrer-Policy header configuration",
             severity=Severity.LOW,
             remediation="Set Referrer-Policy: strict-origin-when-cross-origin",
-            cwe_id="CWE-200"
+            cwe_id="CWE-200",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-009",
@@ -107,7 +134,10 @@ class InfrastructureChecker(BaseSecurityChecker):
             description="Checks for Permissions-Policy header",
             severity=Severity.LOW,
             remediation="Implement Permissions-Policy to restrict browser features",
-            cwe_id="CWE-16"
+            cwe_id="CWE-16",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.HIGH,
+            method="header"
         ),
         SecurityCheck(
             id="IF-010",
@@ -117,7 +147,11 @@ class InfrastructureChecker(BaseSecurityChecker):
             severity=Severity.CRITICAL,
             remediation="Ensure valid certificate from trusted CA",
             cwe_id="CWE-295",
-            pci_dss="4.1"
+            pci_dss="4.1",
+            check_type=CheckType.DETERMINISTIC,
+            accuracy=Accuracy.MEDIUM,  # Only checks HTTPS works
+            method="protocol",
+            can_verify=False  # Would need full cert inspection
         ),
     ]
 
