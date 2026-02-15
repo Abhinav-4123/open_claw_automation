@@ -1099,6 +1099,223 @@ async def export_recommendations(format: str):
 
 
 # ============================================================
+# NEXUS QA v4.0 - Autonomous Multi-Agent Deep Scan
+# ============================================================
+
+from .agents import (
+    Orchestrator, PMAgent, ExplorerAgent, DevToolsAgent,
+    PlannerAgent, SecurityAgent, ReportAgent
+)
+
+# Store autonomous scan sessions
+autonomous_scan_results = {}
+
+
+class AutonomousScanRequest(BaseModel):
+    url: HttpUrl
+    deep_scan: bool = True  # Full multi-agent analysis
+    timeout_minutes: int = 60  # Max scan duration
+
+
+class AutonomousScanResponse(BaseModel):
+    scan_id: str
+    status: str
+    url: str
+    started_at: str
+    estimated_duration_minutes: int
+
+
+@app.post("/autonomous/scan", response_model=AutonomousScanResponse)
+async def start_autonomous_scan(
+    request: AutonomousScanRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Start a fully autonomous deep security scan.
+
+    This uses a multi-agent system to:
+    1. Understand the product (PM Agent with VLM)
+    2. Explore and map user journeys (Explorer Agent)
+    3. Analyze APIs and network traffic (DevTools Agent)
+    4. Create contextual test plan (Planner Agent)
+    5. Execute 82+ security checks (Security Agent)
+    6. Generate comprehensive PDF report (Report Agent)
+
+    Expected duration: 30-60 minutes for thorough analysis.
+    """
+    scan_id = f"auto_{uuid.uuid4().hex[:12]}"
+    url = str(request.url)
+
+    # Initialize session
+    session_data = {
+        "id": scan_id,
+        "url": url,
+        "status": "starting",
+        "phase": "initializing",
+        "started_at": datetime.now().isoformat(),
+        "completed_at": None,
+        "progress": 0,
+        "product_profile": None,
+        "journeys": [],
+        "api_inventory": [],
+        "security_findings": [],
+        "report_path": None,
+        "errors": []
+    }
+    autonomous_scan_results[scan_id] = session_data
+
+    # Run in background
+    background_tasks.add_task(run_autonomous_scan, scan_id, url, request.timeout_minutes)
+
+    return AutonomousScanResponse(
+        scan_id=scan_id,
+        status="starting",
+        url=url,
+        started_at=session_data["started_at"],
+        estimated_duration_minutes=45
+    )
+
+
+async def run_autonomous_scan(scan_id: str, url: str, timeout_minutes: int):
+    """Run the full autonomous scan with all agents."""
+    session = autonomous_scan_results[scan_id]
+
+    try:
+        session["status"] = "running"
+        session["phase"] = "product_analysis"
+
+        # Create orchestrator
+        orchestrator = Orchestrator()
+
+        # Define agent classes to use
+        agent_classes = [
+            PMAgent,
+            ExplorerAgent,
+            DevToolsAgent,
+            PlannerAgent,
+            SecurityAgent,
+            ReportAgent
+        ]
+
+        # Run the full scan
+        result = await asyncio.wait_for(
+            orchestrator.run_scan(url, agent_classes, {}),
+            timeout=timeout_minutes * 60
+        )
+
+        # Update session with results
+        session["status"] = "completed"
+        session["phase"] = result.phase.value
+        session["completed_at"] = datetime.now().isoformat()
+        session["progress"] = 100
+        session["product_profile"] = result.product_profile
+        session["journeys"] = result.journeys
+        session["api_inventory"] = result.api_inventory
+        session["security_findings"] = result.security_findings
+        session["report_path"] = result.report_path
+        session["errors"] = result.errors
+
+    except asyncio.TimeoutError:
+        session["status"] = "timeout"
+        session["errors"].append(f"Scan exceeded {timeout_minutes} minute timeout")
+
+    except Exception as e:
+        session["status"] = "failed"
+        session["errors"].append(str(e))
+        import traceback
+        session["errors"].append(traceback.format_exc())
+
+
+@app.get("/autonomous/scan/{scan_id}")
+async def get_autonomous_scan(scan_id: str):
+    """Get autonomous scan status and results."""
+    if scan_id not in autonomous_scan_results:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    session = autonomous_scan_results[scan_id]
+
+    return {
+        "id": session["id"],
+        "url": session["url"],
+        "status": session["status"],
+        "phase": session["phase"],
+        "progress": session.get("progress", 0),
+        "started_at": session["started_at"],
+        "completed_at": session.get("completed_at"),
+        "product_profile": session.get("product_profile"),
+        "journeys_count": len(session.get("journeys", [])),
+        "apis_count": len(session.get("api_inventory", [])),
+        "findings_count": len(session.get("security_findings", [])),
+        "report_path": session.get("report_path"),
+        "errors": session.get("errors", [])[-5:]  # Last 5 errors
+    }
+
+
+@app.get("/autonomous/scan/{scan_id}/report")
+async def get_autonomous_report(scan_id: str):
+    """Get the full report for an autonomous scan."""
+    if scan_id not in autonomous_scan_results:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    session = autonomous_scan_results[scan_id]
+
+    if session["status"] != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Scan not completed. Current status: {session['status']}"
+        )
+
+    return {
+        "id": session["id"],
+        "url": session["url"],
+        "completed_at": session["completed_at"],
+        "product_analysis": session.get("product_profile", {}),
+        "user_journeys": session.get("journeys", []),
+        "api_inventory": session.get("api_inventory", []),
+        "security_findings": session.get("security_findings", []),
+        "report_path": session.get("report_path")
+    }
+
+
+@app.get("/autonomous/scan/{scan_id}/download")
+async def download_autonomous_report(scan_id: str, format: str = "pdf"):
+    """Download the report file."""
+    if scan_id not in autonomous_scan_results:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    session = autonomous_scan_results[scan_id]
+    report_path = session.get("report_path")
+
+    if not report_path or not os.path.exists(report_path):
+        raise HTTPException(status_code=404, detail="Report file not found")
+
+    return FileResponse(
+        report_path,
+        filename=f"nexus_qa_report_{scan_id}.{format}",
+        media_type="application/pdf" if format == "pdf" else "text/html"
+    )
+
+
+@app.get("/autonomous/scans")
+async def list_autonomous_scans():
+    """List all autonomous scans."""
+    return {
+        "scans": [
+            {
+                "id": s["id"],
+                "url": s["url"],
+                "status": s["status"],
+                "phase": s["phase"],
+                "started_at": s["started_at"],
+                "completed_at": s.get("completed_at")
+            }
+            for s in autonomous_scan_results.values()
+        ],
+        "total": len(autonomous_scan_results)
+    }
+
+
+# ============================================================
 # NEXUS QA - Enhanced Stats Endpoints
 # ============================================================
 

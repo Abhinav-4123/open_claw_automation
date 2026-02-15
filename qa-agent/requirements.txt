@@ -23,3 +23,11 @@ anthropic==0.18.0
 
 # Optional: For enhanced features
 python-dotenv==1.0.0
+
+# PDF Report Generation
+weasyprint==60.1
+pillow==10.2.0
+
+# Database (optional - for production)
+# redis==5.0.0
+# sqlalchemy==2.0.0

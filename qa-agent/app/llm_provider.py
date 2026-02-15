@@ -384,6 +384,7 @@ class MultiLLMProvider:
     """
     Multi-provider LLM client with automatic fallback.
     Tries providers in order: configured preference > Gemini > OpenAI > Anthropic
+    Supports both text chat and vision (VLM) capabilities.
     """
 
     def __init__(self, preferred_provider: str = None):
@@ -396,6 +397,172 @@ class MultiLLMProvider:
         # Determine provider order
         self.preferred = preferred_provider or os.getenv("LLM_PROVIDER", "auto")
         self.active_provider = None
+
+    async def analyze_image(
+        self,
+        image_base64: str,
+        prompt: str,
+        image_type: str = "png"
+    ) -> str:
+        """
+        Analyze an image using VLM capabilities.
+        Tries each provider until one succeeds.
+        """
+        errors = []
+
+        for provider_name in self._get_provider_order():
+            provider = self.providers[provider_name]
+
+            if not provider.is_available():
+                continue
+
+            try:
+                self.active_provider = provider_name
+
+                if provider_name == "gemini":
+                    return await self._analyze_with_gemini(provider, image_base64, prompt, image_type)
+                elif provider_name == "openai":
+                    return await self._analyze_with_openai(provider, image_base64, prompt, image_type)
+                elif provider_name == "anthropic":
+                    return await self._analyze_with_anthropic(provider, image_base64, prompt, image_type)
+
+            except Exception as e:
+                import traceback
+                error_detail = f"{provider_name}: {str(e)}"
+                print(f"[VLM ERROR] {provider_name}: {str(e)}")
+                print(traceback.format_exc())
+                errors.append(error_detail)
+                continue
+
+        raise Exception(f"All VLM providers failed: {'; '.join(errors)}")
+
+    async def _analyze_with_gemini(
+        self,
+        provider: 'GeminiProvider',
+        image_base64: str,
+        prompt: str,
+        image_type: str
+    ) -> str:
+        """Analyze image with Gemini."""
+        import base64
+
+        # Gemini expects the image as part of content
+        model = provider.client.GenerativeModel(model_name="gemini-2.0-flash")
+
+        # Create image part
+        image_data = base64.b64decode(image_base64)
+
+        response = model.generate_content([
+            prompt,
+            {"mime_type": f"image/{image_type}", "data": image_data}
+        ])
+
+        return response.text
+
+    async def _analyze_with_openai(
+        self,
+        provider: 'OpenAIProvider',
+        image_base64: str,
+        prompt: str,
+        image_type: str
+    ) -> str:
+        """Analyze image with OpenAI GPT-4 Vision."""
+        response = await provider.client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/{image_type};base64,{image_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            max_tokens=4096
+        )
+
+        return response.choices[0].message.content
+
+    async def _analyze_with_anthropic(
+        self,
+        provider: 'AnthropicProvider',
+        image_base64: str,
+        prompt: str,
+        image_type: str
+    ) -> str:
+        """Analyze image with Claude Vision."""
+        response = provider.client.messages.create(
+            model=provider.model,
+            max_tokens=4096,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": f"image/{image_type}",
+                                "data": image_base64
+                            }
+                        },
+                        {"type": "text", "text": prompt}
+                    ]
+                }
+            ]
+        )
+
+        return response.content[0].text
+
+    async def chat_simple(self, prompt: str) -> str:
+        """Simple chat without tools - returns just text."""
+        errors = []
+
+        for provider_name in self._get_provider_order():
+            provider = self.providers[provider_name]
+
+            if not provider.is_available():
+                continue
+
+            try:
+                self.active_provider = provider_name
+
+                if provider_name == "gemini":
+                    model = provider.client.GenerativeModel(model_name=provider.model)
+                    response = model.generate_content(prompt)
+                    return response.text
+
+                elif provider_name == "openai":
+                    response = await provider.client.chat.completions.create(
+                        model=provider.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=4096
+                    )
+                    return response.choices[0].message.content
+
+                elif provider_name == "anthropic":
+                    response = provider.client.messages.create(
+                        model=provider.model,
+                        max_tokens=4096,
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                    return response.content[0].text
+
+            except Exception as e:
+                errors.append(f"{provider_name}: {str(e)}")
+                continue
+
+        raise Exception(f"All providers failed: {'; '.join(errors)}")
+
+    # Alias for simpler usage
+    async def chat(self, prompt: str) -> str:
+        """Alias for chat_simple."""
+        return await self.chat_simple(prompt)
 
     def get_available_providers(self) -> List[str]:
         """Get list of available providers"""
@@ -454,3 +621,7 @@ class MultiLLMProvider:
 def get_llm_client(preferred_provider: str = None) -> MultiLLMProvider:
     """Factory function to create LLM client"""
     return MultiLLMProvider(preferred_provider)
+
+
+# Alias for backward compatibility and simpler imports
+LLMProvider = MultiLLMProvider
