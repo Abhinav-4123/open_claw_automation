@@ -6,6 +6,7 @@ Analyzes screenshots, identifies app type, features, and user personas.
 
 import asyncio
 import base64
+import json
 import logging
 import os
 from datetime import datetime
@@ -217,7 +218,6 @@ Be thorough but concise. Only include what you can actually observe."""
             )
 
             # Parse JSON response
-            import json
             # Try to extract JSON from response
             response_text = response.strip()
 
