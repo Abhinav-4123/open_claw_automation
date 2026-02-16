@@ -1377,8 +1377,172 @@ async def get_stats_trends(days: int = 7):
     }
 
 
+# ============================================================
+# NEXUS QA v5.0 - Live Scan with Real-Time Updates (SSE)
+# ============================================================
+
+from fastapi.responses import StreamingResponse
+from .live_scan import (
+    create_live_scan, get_live_scan, LiveScanner,
+    live_scan_sessions, LiveScanSession
+)
+
+
+class LiveScanRequest(BaseModel):
+    url: HttpUrl
+    credentials: Optional[Dict[str, str]] = None  # {email, password}
+
+
+@app.post("/live/scan")
+async def start_live_scan(
+    request: LiveScanRequest,
+    background_tasks: BackgroundTasks
+):
+    """
+    Start a live scan with real-time SSE updates.
+
+    Connect to /live/scan/{scan_id}/stream for real-time events.
+    """
+    session = create_live_scan(str(request.url))
+
+    if request.credentials:
+        session.provide_credentials(request.credentials)
+
+    # Start scan in background
+    async def run_scan():
+        scanner = LiveScanner(session)
+        await scanner.run()
+
+    background_tasks.add_task(run_scan)
+
+    return {
+        "scan_id": session.scan_id,
+        "url": session.url,
+        "status": "starting",
+        "stream_url": f"/live/scan/{session.scan_id}/stream",
+        "status_url": f"/live/scan/{session.scan_id}",
+        "message": "Connect to stream_url for real-time updates"
+    }
+
+
+@app.get("/live/scan/{scan_id}/stream")
+async def live_scan_stream(scan_id: str):
+    """
+    SSE stream of live scan events.
+
+    Events include:
+    - browser_launched: Browser started on Linux VM
+    - page_loaded: Page loaded with screenshot
+    - screenshot_captured: New screenshot taken
+    - form_detected: Form found on page
+    - login_required: Credentials needed
+    - journey_step: User journey step captured
+    - api_call_detected: API call intercepted
+    - context_note: Developer observation
+    - finding_detected: Security issue found
+    - scan_complete: Scan finished
+    """
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    return StreamingResponse(
+        session.event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.get("/live/scan/{scan_id}")
+async def get_live_scan_status(scan_id: str):
+    """Get current status of a live scan."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    return session.get_status()
+
+
+@app.post("/live/scan/{scan_id}/credentials")
+async def provide_scan_credentials(scan_id: str, credentials: Dict[str, str]):
+    """Provide credentials for a scan awaiting login."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    if not session.awaiting_credentials:
+        raise HTTPException(status_code=400, detail="Scan not awaiting credentials")
+
+    session.provide_credentials(credentials)
+    return {"status": "credentials_received", "scan_id": scan_id}
+
+
+@app.get("/live/scan/{scan_id}/screenshots")
+async def get_scan_screenshots(scan_id: str):
+    """Get all screenshots from a scan."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    return {
+        "scan_id": scan_id,
+        "screenshots": session.screenshots,
+        "count": len(session.screenshots)
+    }
+
+
+@app.get("/live/scan/{scan_id}/api-calls")
+async def get_scan_api_calls(scan_id: str):
+    """Get all intercepted API calls."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    return {
+        "scan_id": scan_id,
+        "api_calls": [call.to_dict() for call in session.api_calls],
+        "count": len(session.api_calls)
+    }
+
+
+@app.get("/live/scan/{scan_id}/journey")
+async def get_scan_journey(scan_id: str):
+    """Get the discovered user journey."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    return {
+        "scan_id": scan_id,
+        "steps": [
+            {
+                "step": s.step_number,
+                "url": s.url,
+                "title": s.page_title,
+                "action": s.action,
+                "notes": s.notes,
+                "timestamp": s.timestamp
+            }
+            for s in session.journey_steps
+        ],
+        "context_notes": session.context_notes
+    }
+
+
+@app.get("/live/scans")
+async def list_live_scans():
+    """List all live scans."""
+    return {
+        "scans": [s.get_status() for s in live_scan_sessions.values()],
+        "total": len(live_scan_sessions)
+    }
+
+
 # Serve static files for landing page and dashboard
-import os
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "landing")
 DASHBOARD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "dashboard")
 
