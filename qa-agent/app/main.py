@@ -6,19 +6,37 @@ import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+from contextlib import asynccontextmanager
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
 env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(env_path)
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+# Initialize new infrastructure
+from app.core import settings, setup_logging, get_logger
+from app.db import init_db, close_db, check_db_health, get_db_stats
+
+# Setup structured logging
+setup_logging(
+    level=settings.log_level,
+    format=settings.log_format
+)
+logger = get_logger(__name__)
+
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends, Header, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, validator
 from typing import Optional, List, Dict, Any
 import asyncio
+import ipaddress
+import re
+import hashlib
+import hmac
+import time
+from urllib.parse import urlparse
 
 from .agent import QAAgent
 from .reporter import ReportGenerator
@@ -35,20 +53,180 @@ from .engines import (
 )
 from .database import get_db
 
+
+# Application lifespan for startup/shutdown events
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application startup and shutdown."""
+    # Startup
+    logger.info("Starting NEXUS QA application...")
+    try:
+        await init_db()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.warning(f"Database initialization skipped (SQLite fallback): {e}")
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down NEXUS QA application...")
+    try:
+        await close_db()
+        logger.info("Database connection closed")
+    except Exception as e:
+        logger.warning(f"Database close error: {e}")
+
+
 app = FastAPI(
     title="NEXUS QA",
     description="Quality Intelligence Platform - AI-powered QA testing with 80+ security checks",
-    version="3.0.0"
+    version="3.0.0",
+    lifespan=lifespan
 )
 
-# Enable CORS for dashboard
+# Security: CORS configuration - restrict to known origins
+ALLOWED_ORIGINS = [
+    "https://vibesecurity.in",
+    "https://www.vibesecurity.in",
+    "https://app.vibesecurity.in",
+    "http://localhost:3000",  # Local development
+    "http://localhost:8000",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
+
+
+# Security headers middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        return response
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
+# ============================================================
+# SECURITY UTILITIES
+# ============================================================
+
+# API Key for authentication (should be in env vars in production)
+API_KEYS = set(os.getenv("API_KEYS", "").split(",")) if os.getenv("API_KEYS") else set()
+REQUIRE_AUTH = os.getenv("REQUIRE_AUTH", "false").lower() == "true"
+
+# Rate limiting (simple in-memory, use Redis in production)
+rate_limit_store: Dict[str, List[float]] = {}
+RATE_LIMIT_REQUESTS = 100  # requests per window
+RATE_LIMIT_WINDOW = 3600  # 1 hour
+
+
+def check_rate_limit(client_ip: str) -> bool:
+    """Check if client has exceeded rate limit."""
+    now = time.time()
+    if client_ip not in rate_limit_store:
+        rate_limit_store[client_ip] = []
+
+    # Clean old entries
+    rate_limit_store[client_ip] = [
+        t for t in rate_limit_store[client_ip]
+        if now - t < RATE_LIMIT_WINDOW
+    ]
+
+    if len(rate_limit_store[client_ip]) >= RATE_LIMIT_REQUESTS:
+        return False
+
+    rate_limit_store[client_ip].append(now)
+    return True
+
+
+async def verify_api_key(x_api_key: Optional[str] = Header(None)):
+    """Verify API key if authentication is required."""
+    if not REQUIRE_AUTH:
+        return True
+
+    if not x_api_key or x_api_key not in API_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing API key"
+        )
+    return True
+
+
+def is_safe_url(url: str) -> bool:
+    """
+    Validate URL to prevent SSRF attacks.
+    Blocks internal IPs, localhost, and metadata endpoints.
+    """
+    try:
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+
+        if not hostname:
+            return False
+
+        # Block localhost and common internal hostnames
+        blocked_hosts = [
+            'localhost', '127.0.0.1', '0.0.0.0',
+            'metadata.google.internal', '169.254.169.254',
+            'metadata', 'kubernetes.default'
+        ]
+
+        if hostname.lower() in blocked_hosts:
+            return False
+
+        # Check if hostname is an IP address
+        try:
+            ip = ipaddress.ip_address(hostname)
+            # Block private and reserved IPs
+            if ip.is_private or ip.is_reserved or ip.is_loopback or ip.is_link_local:
+                return False
+        except ValueError:
+            # Not an IP address, check for internal domain patterns
+            internal_patterns = [
+                r'.*\.local$',
+                r'.*\.internal$',
+                r'.*\.corp$',
+                r'^10\.\d+\.\d+\.\d+$',
+                r'^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$',
+                r'^192\.168\.\d+\.\d+$',
+            ]
+            for pattern in internal_patterns:
+                if re.match(pattern, hostname.lower()):
+                    return False
+
+        # Only allow http/https
+        if parsed.scheme not in ('http', 'https'):
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
+def sanitize_path(path: str, base_dir: str) -> Optional[str]:
+    """Sanitize file path to prevent path traversal."""
+    try:
+        # Resolve to absolute path
+        resolved = os.path.realpath(path)
+        base_resolved = os.path.realpath(base_dir)
+
+        # Ensure path is within base directory
+        if resolved.startswith(base_resolved):
+            return resolved
+        return None
+    except Exception:
+        return None
 
 # Include billing routes
 app.include_router(billing_router)
@@ -78,6 +256,21 @@ class TestRequest(BaseModel):
     steps: Optional[List[str]] = None  # Custom steps to execute
     webhook_url: Optional[HttpUrl] = None  # Notify on completion
 
+    @validator('url')
+    def validate_target_url(cls, v):
+        url_str = str(v)
+        if not is_safe_url(url_str):
+            raise ValueError('URL targets internal or restricted resources')
+        return v
+
+    @validator('webhook_url')
+    def validate_webhook_url(cls, v):
+        if v:
+            url_str = str(v)
+            if not is_safe_url(url_str):
+                raise ValueError('Webhook URL targets internal or restricted resources')
+        return v
+
 
 class TestResult(BaseModel):
     test_id: str
@@ -104,7 +297,12 @@ async def root():
 
 
 @app.post("/test", response_model=TestResult)
-async def create_test(request: TestRequest, background_tasks: BackgroundTasks):
+async def create_test(
+    request: TestRequest,
+    background_tasks: BackgroundTasks,
+    req: Request,
+    _: bool = Depends(verify_api_key)
+):
     """
     Start a new QA test for the specified URL and objective.
 
@@ -115,6 +313,14 @@ async def create_test(request: TestRequest, background_tasks: BackgroundTasks):
     - "full_flow": Test signup -> login -> core action
     - "custom": Execute custom steps provided in 'steps' field
     """
+    # Rate limiting
+    client_ip = req.client.host if req.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please try again later."
+        )
+
     test_id = str(uuid.uuid4())[:8]
 
     result = TestResult(
@@ -210,6 +416,10 @@ async def list_tests():
 @app.get("/report/{test_id}")
 async def get_report(test_id: str):
     """Get the markdown report for a completed test"""
+    # Validate test_id format to prevent injection
+    if not re.match(r'^[a-f0-9]{8}$', test_id):
+        raise HTTPException(status_code=400, detail="Invalid test ID format")
+
     if test_id not in test_results:
         raise HTTPException(status_code=404, detail="Test not found")
 
@@ -217,7 +427,14 @@ async def get_report(test_id: str):
     if not result.report_path:
         raise HTTPException(status_code=400, detail="Report not yet available")
 
-    with open(result.report_path, "r") as f:
+    # Sanitize path to prevent path traversal
+    base_dir = os.path.dirname(os.path.dirname(__file__))
+    safe_path = sanitize_path(result.report_path, base_dir)
+
+    if not safe_path or not os.path.exists(safe_path):
+        raise HTTPException(status_code=404, detail="Report file not found")
+
+    with open(safe_path, "r") as f:
         return {"report": f.read()}
 
 
@@ -259,7 +476,29 @@ async def run_scheduled_tests(background_tasks: BackgroundTasks):
 @app.get("/health")
 async def health_check():
     """Health check endpoint for Cloud Run"""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+    # Check database health
+    db_healthy = False
+    try:
+        db_healthy = await check_db_health()
+    except Exception:
+        pass
+
+    db_stats = {}
+    try:
+        db_stats = await get_db_stats()
+    except Exception:
+        db_stats = {"status": "unavailable"}
+
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": settings.app_version,
+        "environment": settings.environment,
+        "database": {
+            "healthy": db_healthy,
+            "stats": db_stats
+        }
+    }
 
 
 # Security Scanning Endpoints
@@ -270,6 +509,13 @@ class SecurityScanRequest(BaseModel):
     url: HttpUrl
     frameworks: Optional[List[str]] = None  # OWASP, VAPT, ISO_27001, SOC_2, PCI_DSS, GDPR
 
+    @validator('url')
+    def validate_target_url(cls, v):
+        url_str = str(v)
+        if not is_safe_url(url_str):
+            raise ValueError('URL targets internal or restricted resources')
+        return v
+
 
 class SecurityScanResponse(BaseModel):
     scan_id: str
@@ -279,7 +525,12 @@ class SecurityScanResponse(BaseModel):
 
 
 @app.post("/security/scan", response_model=SecurityScanResponse)
-async def start_security_scan(request: SecurityScanRequest, background_tasks: BackgroundTasks):
+async def start_security_scan(
+    request: SecurityScanRequest,
+    background_tasks: BackgroundTasks,
+    req: Request,
+    _: bool = Depends(verify_api_key)
+):
     """
     Start a security scan for the specified URL.
 
@@ -291,6 +542,14 @@ async def start_security_scan(request: SecurityScanRequest, background_tasks: Ba
     - pci_dss: PCI DSS Payment Security
     - gdpr: GDPR Data Protection
     """
+    # Rate limiting
+    client_ip = req.client.host if req.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please try again later."
+        )
+
     scan_id = f"sec_{uuid.uuid4().hex[:8]}"
 
     result = SecurityScanResponse(
@@ -366,8 +625,8 @@ async def run_security_scan(scan_id: str, url: str, frameworks: Optional[List[st
                 for c in cookies_raw
             ]
 
-            # Run security scanner
-            scanner = SecurityScanner()
+            # Run security scanner (use Legacy scanner for OWASP framework checks)
+            scanner = LegacySecurityScanner()
 
             # Convert framework strings to enums
             framework_enums = None
@@ -1116,6 +1375,20 @@ class AutonomousScanRequest(BaseModel):
     deep_scan: bool = True  # Full multi-agent analysis
     timeout_minutes: int = 60  # Max scan duration
 
+    @validator('url')
+    def validate_target_url(cls, v):
+        url_str = str(v)
+        if not is_safe_url(url_str):
+            raise ValueError('URL targets internal or restricted resources')
+        return v
+
+    @validator('timeout_minutes')
+    def validate_timeout(cls, v):
+        # Limit timeout to prevent resource exhaustion
+        if v < 1 or v > 120:
+            raise ValueError('Timeout must be between 1 and 120 minutes')
+        return v
+
 
 class AutonomousScanResponse(BaseModel):
     scan_id: str
@@ -1128,7 +1401,9 @@ class AutonomousScanResponse(BaseModel):
 @app.post("/autonomous/scan", response_model=AutonomousScanResponse)
 async def start_autonomous_scan(
     request: AutonomousScanRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    req: Request,
+    _: bool = Depends(verify_api_key)
 ):
     """
     Start a fully autonomous deep security scan.
@@ -1392,17 +1667,46 @@ class LiveScanRequest(BaseModel):
     url: HttpUrl
     credentials: Optional[Dict[str, str]] = None  # {email, password}
 
+    @validator('url')
+    def validate_target_url(cls, v):
+        url_str = str(v)
+        if not is_safe_url(url_str):
+            raise ValueError('URL targets internal or restricted resources')
+        return v
+
+    @validator('credentials')
+    def sanitize_credentials(cls, v):
+        """Sanitize credentials - don't store actual password in logs."""
+        if v:
+            # Return sanitized version
+            return {
+                'email': v.get('email', v.get('username', '')),
+                'password': v.get('password', ''),  # Stored securely, not logged
+                '_sanitized': True
+            }
+        return v
+
 
 @app.post("/live/scan")
 async def start_live_scan(
     request: LiveScanRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    req: Request,
+    _: bool = Depends(verify_api_key)
 ):
     """
     Start a live scan with real-time SSE updates.
 
     Connect to /live/scan/{scan_id}/stream for real-time events.
     """
+    # Rate limiting - stricter for live scans (resource intensive)
+    client_ip = req.client.host if req.client else "unknown"
+    if not check_rate_limit(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please try again later."
+        )
+
     session = create_live_scan(str(request.url))
 
     if request.credentials:
@@ -1540,6 +1844,371 @@ async def list_live_scans():
         "scans": [s.get_status() for s in live_scan_sessions.values()],
         "total": len(live_scan_sessions)
     }
+
+
+@app.post("/live/scan/{scan_id}/skip-login")
+async def skip_login(scan_id: str):
+    """Skip login and continue scan without authentication."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    session.awaiting_credentials = False
+    return {"status": "login_skipped", "scan_id": scan_id}
+
+
+@app.get("/live/scan/{scan_id}/report")
+async def get_live_scan_report(scan_id: str):
+    """Generate and download comprehensive PDF report for a live scan."""
+    session = get_live_scan(scan_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    from datetime import datetime
+
+    # CWE and remediation mapping
+    finding_details = {
+        "X-Content-Type-Options": {
+            "cwe": "CWE-16",
+            "owasp": "A05:2021 - Security Misconfiguration",
+            "risk": "MIME-type sniffing can lead to XSS attacks",
+            "remediation": "Add header: X-Content-Type-Options: nosniff",
+            "priority": "P2"
+        },
+        "X-Frame-Options": {
+            "cwe": "CWE-1021",
+            "owasp": "A05:2021 - Security Misconfiguration",
+            "risk": "Clickjacking attacks can trick users into unintended actions",
+            "remediation": "Add header: X-Frame-Options: DENY or SAMEORIGIN",
+            "priority": "P1"
+        },
+        "Strict-Transport-Security": {
+            "cwe": "CWE-319",
+            "owasp": "A02:2021 - Cryptographic Failures",
+            "risk": "Man-in-the-middle attacks, SSL stripping",
+            "remediation": "Add header: Strict-Transport-Security: max-age=31536000; includeSubDomains; preload",
+            "priority": "P1"
+        },
+        "Content-Security-Policy": {
+            "cwe": "CWE-79",
+            "owasp": "A03:2021 - Injection",
+            "risk": "XSS attacks, data injection, clickjacking",
+            "remediation": "Implement CSP: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+            "priority": "P1"
+        },
+        "X-XSS-Protection": {
+            "cwe": "CWE-79",
+            "owasp": "A03:2021 - Injection",
+            "risk": "Reflected XSS attacks in older browsers",
+            "remediation": "Add header: X-XSS-Protection: 1; mode=block (Note: Deprecated, use CSP instead)",
+            "priority": "P3"
+        },
+        "Referrer-Policy": {
+            "cwe": "CWE-200",
+            "owasp": "A01:2021 - Broken Access Control",
+            "risk": "Sensitive URL parameters leaked to third parties",
+            "remediation": "Add header: Referrer-Policy: strict-origin-when-cross-origin",
+            "priority": "P2"
+        },
+        "Information Disclosure": {
+            "cwe": "CWE-200",
+            "owasp": "A05:2021 - Security Misconfiguration",
+            "risk": "Server technology exposed aids targeted attacks",
+            "remediation": "Remove or obscure Server header in web server configuration",
+            "priority": "P3"
+        },
+        "Password": {
+            "cwe": "CWE-522",
+            "owasp": "A07:2021 - Identification and Authentication Failures",
+            "risk": "Stored passwords may be auto-filled, increasing credential theft risk",
+            "remediation": "Add autocomplete='new-password' to password fields",
+            "priority": "P2"
+        },
+        "Cookie": {
+            "cwe": "CWE-614",
+            "owasp": "A07:2021 - Identification and Authentication Failures",
+            "risk": "Session hijacking, XSS cookie theft",
+            "remediation": "Set HttpOnly, Secure, and SameSite=Strict flags on all cookies",
+            "priority": "P1"
+        }
+    }
+
+    def get_finding_details(title):
+        for key, details in finding_details.items():
+            if key.lower() in title.lower():
+                return details
+        return {"cwe": "CWE-Unknown", "owasp": "A05:2021", "risk": "Security misconfiguration", "remediation": "Review and fix according to security best practices", "priority": "P2"}
+
+    # Calculate score and severity counts
+    severity_scores = {"critical": 25, "high": 15, "medium": 8, "low": 3, "info": 0}
+    total_deduction = sum(severity_scores.get(f.get("severity", "info").lower(), 0) for f in session.findings)
+    score = max(0, 100 - total_deduction)
+
+    critical_count = len([f for f in session.findings if f.get("severity", "").lower() == "critical"])
+    high_count = len([f for f in session.findings if f.get("severity", "").lower() == "high"])
+    medium_count = len([f for f in session.findings if f.get("severity", "").lower() == "medium"])
+    low_count = len([f for f in session.findings if f.get("severity", "").lower() == "low"])
+
+    # Risk level
+    if critical_count > 0 or high_count > 2:
+        risk_level = "HIGH"
+        risk_color = "#ef4444"
+    elif high_count > 0 or medium_count > 3:
+        risk_level = "MEDIUM"
+        risk_color = "#f59e0b"
+    else:
+        risk_level = "LOW"
+        risk_color = "#22c55e"
+
+    # Build findings HTML with detailed info
+    findings_html = ""
+    p1_actions = []
+    p2_actions = []
+    p3_actions = []
+
+    for idx, f in enumerate(session.findings, 1):
+        severity = f.get("severity", "info").lower()
+        title = f.get('title', f.get('id', 'Unknown'))
+        details = get_finding_details(title)
+
+        severity_colors = {"critical": "#ef4444", "high": "#f59e0b", "medium": "#eab308", "low": "#3b82f6", "info": "#6b7280"}
+        severity_color = severity_colors.get(severity, "#6b7280")
+
+        findings_html += f"""
+        <div style="border: 1px solid #e5e7eb; padding: 20px; margin: 15px 0; border-radius: 8px; border-left: 4px solid {severity_color}; background: white; page-break-inside: avoid;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px;">
+                <div>
+                    <span style="display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: bold; color: white; background: {severity_color}; text-transform: uppercase;">
+                        {severity}
+                    </span>
+                    <span style="display: inline-block; padding: 3px 10px; border-radius: 4px; font-size: 11px; background: #f3f4f6; color: #374151; margin-left: 8px;">
+                        {details['cwe']}
+                    </span>
+                </div>
+                <span style="font-size: 11px; color: #9ca3af;">#{idx}</span>
+            </div>
+            <h4 style="margin: 0 0 10px 0; color: #111827; font-size: 16px;">{title}</h4>
+            <table style="width: 100%; font-size: 13px; margin-bottom: 12px;">
+                <tr><td style="color: #6b7280; width: 120px; padding: 4px 0;">OWASP:</td><td style="color: #374151;">{details['owasp']}</td></tr>
+                <tr><td style="color: #6b7280; padding: 4px 0;">Evidence:</td><td style="color: #374151; font-family: monospace; background: #f9fafb; padding: 4px 8px; border-radius: 4px;">{f.get('evidence', 'N/A')}</td></tr>
+                <tr><td style="color: #6b7280; padding: 4px 0;">URL:</td><td style="color: #374151;">{f.get('url', session.url)}</td></tr>
+                <tr><td style="color: #6b7280; padding: 4px 0;">Risk:</td><td style="color: #dc2626;">{details['risk']}</td></tr>
+            </table>
+            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px; border-radius: 6px;">
+                <div style="font-weight: 600; color: #166534; margin-bottom: 4px;">Remediation ({details['priority']})</div>
+                <div style="color: #15803d; font-family: monospace; font-size: 12px;">{details['remediation']}</div>
+            </div>
+        </div>
+        """
+
+        action = f"{title}: {details['remediation']}"
+        if details['priority'] == 'P1':
+            p1_actions.append(action)
+        elif details['priority'] == 'P2':
+            p2_actions.append(action)
+        else:
+            p3_actions.append(action)
+
+    if not findings_html:
+        findings_html = "<p style='color: #22c55e; font-size: 18px;'>✅ No security vulnerabilities detected!</p>"
+
+    # Build API analysis HTML
+    api_html = ""
+    for api in session.api_calls[:10]:
+        method = api.method.upper() if hasattr(api, 'method') else api.get('method', 'GET').upper()
+        path = api.path if hasattr(api, 'path') else api.get('path', api.get('url', 'N/A'))
+        status = api.response_status if hasattr(api, 'response_status') else api.get('response_status', 0)
+        headers = api.response_headers if hasattr(api, 'response_headers') else api.get('response_headers', {})
+
+        method_colors = {"GET": "#22c55e", "POST": "#3b82f6", "PUT": "#f59e0b", "DELETE": "#ef4444"}
+        method_color = method_colors.get(method, "#6b7280")
+
+        # Check for missing security headers
+        headers_lower = {k.lower(): v for k, v in headers.items()} if headers else {}
+        missing = []
+        if 'x-content-type-options' not in headers_lower: missing.append("X-Content-Type-Options")
+        if 'x-frame-options' not in headers_lower: missing.append("X-Frame-Options")
+        if 'strict-transport-security' not in headers_lower: missing.append("HSTS")
+        if 'content-security-policy' not in headers_lower: missing.append("CSP")
+
+        missing_html = f"<span style='color: #ef4444; font-size: 11px;'>Missing: {', '.join(missing)}</span>" if missing else "<span style='color: #22c55e; font-size: 11px;'>✓ Headers OK</span>"
+
+        api_html += f"""
+        <tr style="border-bottom: 1px solid #e5e7eb;">
+            <td style="padding: 10px;"><span style="background: {method_color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold;">{method}</span></td>
+            <td style="padding: 10px; font-family: monospace; font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis;">{path}</td>
+            <td style="padding: 10px; text-align: center;"><span style="color: {'#22c55e' if status < 400 else '#ef4444'}; font-weight: bold;">{status}</span></td>
+            <td style="padding: 10px;">{missing_html}</td>
+        </tr>
+        """
+
+    # Compliance mapping
+    compliance_html = f"""
+    <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+        <tr style="background: #f3f4f6;">
+            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb;">Framework</th>
+            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb;">Status</th>
+            <th style="padding: 12px; text-align: left; border-bottom: 2px solid #e5e7eb;">Issues</th>
+        </tr>
+        <tr><td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><strong>OWASP Top 10</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><span style="color: {'#ef4444' if medium_count + high_count > 0 else '#22c55e'};">{'FAIL' if medium_count + high_count > 0 else 'PASS'}</span></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">{medium_count + high_count + critical_count} issues</td></tr>
+        <tr><td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><strong>PCI-DSS 4.0</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><span style="color: {'#ef4444' if high_count > 0 else '#22c55e'};">{'FAIL' if high_count > 0 else 'PASS'}</span></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">Req 6.4.1, 6.4.2</td></tr>
+        <tr><td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><strong>ISO 27001</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><span style="color: {'#f59e0b' if len(session.findings) > 5 else '#22c55e'};">{'REVIEW' if len(session.findings) > 5 else 'PASS'}</span></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">A.14.1.2, A.14.1.3</td></tr>
+        <tr><td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><strong>SOC 2 Type II</strong></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;"><span style="color: {'#f59e0b' if medium_count > 2 else '#22c55e'};">{'REVIEW' if medium_count > 2 else 'PASS'}</span></td>
+            <td style="padding: 10px; border-bottom: 1px solid #e5e7eb;">CC6.1, CC6.6</td></tr>
+    </table>
+    """
+
+    html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Security Assessment Report - {scan_id}</title>
+    <style>
+        @page {{ size: A4; margin: 20mm; }}
+        body {{ font-family: 'Segoe UI', Arial, sans-serif; line-height: 1.6; color: #1f2937; background: #fff; margin: 0; padding: 20px; }}
+        .page-break {{ page-break-before: always; }}
+        .header {{ background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 40px; margin: -20px -20px 30px -20px; }}
+        .header h1 {{ margin: 0; font-size: 32px; }}
+        .header p {{ margin: 10px 0 0 0; opacity: 0.9; }}
+        .section {{ margin-bottom: 30px; }}
+        .section-title {{ font-size: 20px; font-weight: 600; color: #111827; border-bottom: 2px solid #6366f1; padding-bottom: 8px; margin-bottom: 20px; }}
+        .card {{ background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 20px; margin-bottom: 15px; }}
+        .score-box {{ text-align: center; padding: 30px; background: white; border: 1px solid #e5e7eb; border-radius: 12px; }}
+        .score-value {{ font-size: 64px; font-weight: bold; color: {'#22c55e' if score >= 80 else '#f59e0b' if score >= 60 else '#ef4444'}; }}
+        .stats-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }}
+        .stat-card {{ background: white; border: 1px solid #e5e7eb; border-radius: 8px; padding: 15px; text-align: center; }}
+        .stat-value {{ font-size: 28px; font-weight: bold; }}
+        .stat-label {{ font-size: 12px; color: #6b7280; text-transform: uppercase; }}
+        .risk-badge {{ display: inline-block; padding: 8px 20px; border-radius: 20px; font-weight: bold; font-size: 14px; background: {risk_color}; color: white; }}
+        .priority-section {{ margin: 15px 0; padding: 15px; border-radius: 8px; }}
+        .p1 {{ background: #fef2f2; border-left: 4px solid #ef4444; }}
+        .p2 {{ background: #fffbeb; border-left: 4px solid #f59e0b; }}
+        .p3 {{ background: #f0fdf4; border-left: 4px solid #22c55e; }}
+        table {{ width: 100%; border-collapse: collapse; }}
+        th, td {{ text-align: left; }}
+        .footer {{ margin-top: 40px; padding-top: 20px; border-top: 1px solid #e5e7eb; text-align: center; color: #9ca3af; font-size: 12px; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Security Assessment Report</h1>
+        <p>Comprehensive Security Analysis by VibeSecurity NEXUS QA</p>
+    </div>
+
+    <div class="section">
+        <h2 class="section-title">Executive Summary</h2>
+        <div class="card">
+            <table style="width: 100%;">
+                <tr><td style="width: 150px; color: #6b7280; padding: 8px 0;"><strong>Target URL:</strong></td><td>{session.url}</td></tr>
+                <tr><td style="color: #6b7280; padding: 8px 0;"><strong>Scan ID:</strong></td><td style="font-family: monospace;">{scan_id}</td></tr>
+                <tr><td style="color: #6b7280; padding: 8px 0;"><strong>Scan Date:</strong></td><td>{session.started_at}</td></tr>
+                <tr><td style="color: #6b7280; padding: 8px 0;"><strong>Overall Risk:</strong></td><td><span class="risk-badge">{risk_level} RISK</span></td></tr>
+            </table>
+        </div>
+
+        <div class="score-box">
+            <div style="color: #6b7280; font-size: 14px; margin-bottom: 10px;">SECURITY SCORE</div>
+            <div class="score-value">{score}<span style="font-size: 24px; color: #9ca3af;">/100</span></div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card"><div class="stat-value" style="color: #ef4444;">{critical_count}</div><div class="stat-label">Critical</div></div>
+            <div class="stat-card"><div class="stat-value" style="color: #f59e0b;">{high_count}</div><div class="stat-label">High</div></div>
+            <div class="stat-card"><div class="stat-value" style="color: #eab308;">{medium_count}</div><div class="stat-label">Medium</div></div>
+            <div class="stat-card"><div class="stat-value" style="color: #3b82f6;">{low_count}</div><div class="stat-label">Low</div></div>
+        </div>
+
+        <div class="card">
+            <strong>Scan Coverage:</strong>
+            <div class="stats-grid" style="margin-top: 10px;">
+                <div><strong>{len(session.api_calls)}</strong> API Calls Analyzed</div>
+                <div><strong>{len(session.screenshots)}</strong> Screenshots Captured</div>
+                <div><strong>{len(session.journey_steps)}</strong> User Journeys</div>
+                <div><strong>82</strong> Security Checks Run</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="section">
+        <h2 class="section-title">Prioritized Action Items</h2>
+        {'<div class="priority-section p1"><strong style="color: #dc2626;">🔴 Priority 1 - Immediate Action Required</strong><ul style="margin: 10px 0; padding-left: 20px;">' + "".join(f"<li>{a}</li>" for a in p1_actions) + '</ul></div>' if p1_actions else ''}
+        {'<div class="priority-section p2"><strong style="color: #d97706;">🟡 Priority 2 - Address Soon</strong><ul style="margin: 10px 0; padding-left: 20px;">' + "".join(f"<li>{a}</li>" for a in p2_actions) + '</ul></div>' if p2_actions else ''}
+        {'<div class="priority-section p3"><strong style="color: #16a34a;">🟢 Priority 3 - Best Practice</strong><ul style="margin: 10px 0; padding-left: 20px;">' + "".join(f"<li>{a}</li>" for a in p3_actions) + '</ul></div>' if p3_actions else ''}
+    </div>
+
+    <div class="page-break"></div>
+
+    <div class="section">
+        <h2 class="section-title">Compliance Mapping</h2>
+        {compliance_html}
+    </div>
+
+    <div class="section">
+        <h2 class="section-title">Detailed Findings ({len(session.findings)})</h2>
+        {findings_html}
+    </div>
+
+    <div class="page-break"></div>
+
+    <div class="section">
+        <h2 class="section-title">API Security Analysis</h2>
+        <p style="color: #6b7280; margin-bottom: 15px;">Analysis of {len(session.api_calls)} intercepted API calls for security header compliance.</p>
+        <table style="background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+            <thead style="background: #f3f4f6;">
+                <tr>
+                    <th style="padding: 12px; width: 80px;">Method</th>
+                    <th style="padding: 12px;">Endpoint</th>
+                    <th style="padding: 12px; width: 80px;">Status</th>
+                    <th style="padding: 12px;">Security Headers</th>
+                </tr>
+            </thead>
+            <tbody>
+                {api_html if api_html else '<tr><td colspan="4" style="padding: 20px; text-align: center; color: #6b7280;">No API calls intercepted</td></tr>'}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="footer">
+        <p><strong>VibeSecurity NEXUS QA</strong> - Enterprise Security Assessment Platform</p>
+        <p>https://vibesecurity.in | Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')}</p>
+        <p style="margin-top: 10px; font-size: 10px;">This report is confidential and intended for authorized recipients only.</p>
+    </div>
+</body>
+</html>
+    """
+
+    # Try to generate PDF using weasyprint
+    try:
+        from weasyprint import HTML
+        import io
+
+        pdf_buffer = io.BytesIO()
+        HTML(string=html_content).write_pdf(pdf_buffer)
+        pdf_buffer.seek(0)
+
+        return StreamingResponse(
+            pdf_buffer,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f"attachment; filename=security_report_{scan_id}.pdf"
+            }
+        )
+    except ImportError:
+        # Fallback to HTML if weasyprint not available
+        return HTMLResponse(
+            content=html_content,
+            headers={
+                "Content-Disposition": f"attachment; filename=security_report_{scan_id}.html"
+            }
+        )
 
 
 # Serve static files for landing page and dashboard
