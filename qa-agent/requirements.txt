@@ -36,7 +36,7 @@ aiosqlite==0.19.0
 
 # Job Queue - Celery with Redis
 celery[redis]==5.3.4
-redis==5.0.1
+redis>=4.5.2,<5.0.0
 kombu==5.3.4
 
 # Observability (optional)
