@@ -216,7 +216,7 @@ Be specific and actionable. Prioritize based on actual risk."""
         )
 
         try:
-            response = await self.llm_provider.chat(prompt)
+            response = await self.llm_provider.chat_simple(prompt)
 
             # Parse JSON from response
             response_text = response.strip()

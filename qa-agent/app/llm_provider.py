@@ -559,10 +559,8 @@ class MultiLLMProvider:
 
         raise Exception(f"All providers failed: {'; '.join(errors)}")
 
-    # Alias for simpler usage
-    async def chat(self, prompt: str) -> str:
-        """Alias for chat_simple."""
-        return await self.chat_simple(prompt)
+    # Note: chat_simple(prompt) is the simple interface
+    # The full chat(messages, system_prompt, tools) is defined below
 
     def get_available_providers(self) -> List[str]:
         """Get list of available providers"""
